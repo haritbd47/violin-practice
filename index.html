@@ -36,6 +36,10 @@
   .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
   .muted{color:var(--muted);font-size:13px}
   .hidden{display:none !important}
+  .lib{display:flex;gap:8px;align-items:center;padding:8px 0;border-top:1px solid var(--line);flex-wrap:wrap}
+  .lib input{flex:1;min-width:160px;font:inherit;font-weight:600;padding:7px 8px;border-radius:8px;border:1px solid transparent;background:transparent;color:var(--ink)}
+  .lib input:hover,.lib input:focus{border-color:var(--line);background:var(--card)}
+  .lib.cur input{color:var(--accent)}
   canvas{display:block}
   /* player */
   .top{display:grid;grid-template-columns:300px minmax(0,1fr);gap:18px;align-items:start}
@@ -76,7 +80,7 @@
 <main>
   <header>
     <h1>Violin Practice</h1>
-    <div class="tabs"><button id="tabPlayer" class="on">Song player</button><button id="tabTuner">Tuner</button></div>
+    <div class="tabs"><button id="tabPlayer" class="on">Song player</button><button id="tabLib">Library</button><button id="tabTuner">Tuner</button></div>
     <span class="sp"></span>
     <span class="muted">A =</span>
     <select id="ref"><option>440</option><option>441</option><option selected>442</option><option>443</option></select>
@@ -129,7 +133,7 @@
         <div class="seg" id="modeSeg"><button data-m="play" class="on">Play along</button><button data-m="wait">Wait for me</button></div>
       </div>
       <div class="row ctl">
-        <div class="grp"><span class="muted">Tempo</span><input id="bpm" type="range" min="30" max="220" value="100"><b id="bpmV">100</b></div>
+        <div class="grp"><span class="muted">Tempo</span><input id="bpm" type="range" min="30" max="220" value="100"><b id="bpmV">100</b><button class="btn sm" id="bpmOrig">Original tempo</button></div>
         <label class="chk"><input type="checkbox" id="cSound" checked> Sound</label>
         <label class="chk"><input type="checkbox" id="cMetro"> Metronome</label>
         <span class="sp"></span>
@@ -157,6 +161,14 @@
     </div>
   </section>
 
+  <!-- ================= LIBRARY ================= -->
+  <section id="library" class="hidden">
+    <div class="card">
+      <div class="row"><b style="font-size:17px">Library</b><span class="muted">Every file you open and every recording you turn into notes is saved here, on this device.</span></div>
+      <div id="libList" style="margin-top:10px"></div>
+    </div>
+  </section>
+
   <!-- ================= TUNER ================= -->
   <section id="tuner" class="hidden">
     <div class="card">
@@ -180,7 +192,7 @@ const STEPS='CDEFGAB', STEP_PC=[0,2,4,5,7,9,11];
 const NAMES=['C','C♯','D','D♯','E','F','F♯','G','G♯','A','A♯','B'];
 const SHARP=[[0,0],[0,1],[1,0],[1,1],[2,0],[3,0],[3,1],[4,0],[4,1],[5,0],[5,1],[6,0]];
 const FLAT =[[0,0],[1,-1],[1,0],[2,-1],[2,0],[3,0],[4,-1],[4,0],[5,-1],[5,0],[6,-1],[6,0]];
-const OPEN=[55,62,69,76], SNAME=['G','D','A','E'];
+const OPEN=[55,62,69,76], SNAME=['G','D','A','E'], SOLF=['DO','RE','MI','FA','SO','LA','TI'];
 const ACC={'1':'♯','-1':'♭','0':'♮','2':'𝄪','-2':'♭♭'};
 
 const S={A:442, song:null, pi:0, idx:0, mode:'play', playing:false, bpm:100, transpose:0,
@@ -427,22 +439,58 @@ function demoSong(key){
 // ---------- song setup ----------
 function part(){return P;}
 function measureIdx(b){const M=P.measures;let lo=0,hi=M.length-1;while(lo<hi){const mid=(lo+hi+1)>>1;if(M[mid].start<=b+1e-6)lo=mid;else hi=mid-1;}return lo;}
-function setSong(song,keep){
+function setSong(song){
   stop();
-  S.song=song; S.pi=0; if(!keep){S.bpm=Math.max(30,Math.min(220,Math.round(song.bpm||100)));}
+  S.song=song; S.bpm=origBpm();
   const ps=$('partSel'); ps.innerHTML=''; song.parts.forEach((p,i)=>{const o=document.createElement('option');o.value=i;o.textContent=p.name;ps.appendChild(o);});
   ps.classList.toggle('hidden',song.parts.length<2);
   $('title').textContent=song.title||'';
-  setPart(0,true);
+  S.transpose=song.tr||0;
+  const pi=Math.min(song.pi||0,song.parts.length-1); ps.value=String(pi);
+  setPart(pi,false);
+  $('bpmOrig').textContent='Original tempo ('+origBpm()+')';
   saveSong();
 }
-function saveSong(){try{localStorage.setItem('vp.song',JSON.stringify(S.song,(k,v)=>(k==='d'||k==='mi'||k==='notes')?undefined:v));}catch(e){}}
-function setPart(i,auto){
+function origBpm(){return Math.max(30,Math.min(220,Math.round((S.song&&S.song.bpm)||100)));}
+// ---- library: songs are kept in this browser's storage
+const LIB={idx:[]};
+function hashStr(t){let h=5381;for(let i=0;i<t.length;i++)h=((h<<5)+h+t.charCodeAt(i))>>>0;return h.toString(36);}
+function songJSON(song){return JSON.stringify(song,(k,v)=>(k==='d'||k==='mi'||k==='notes')?undefined:v);}
+function libLoad(){try{LIB.idx=JSON.parse(localStorage.getItem('vp.lib')||'[]')||[];}catch(e){LIB.idx=[];}}
+function libSaveIdx(){try{localStorage.setItem('vp.lib',JSON.stringify(LIB.idx));}catch(e){}}
+function libPut(song){
+  if(!song.id)return false;
+  try{localStorage.setItem('vp.lib.'+song.id,songJSON(song));}catch(e){$('msg').textContent='⚠ The library is full. Delete songs you no longer need in the Library tab.';return false;}
+  let it=LIB.idx.find(x=>x.id===song.id); if(!it){it={id:song.id,added:Date.now()};LIB.idx.unshift(it);}
+  it.title=song.title||'Untitled'; it.count=song.parts.reduce((a,p)=>Math.max(a,p.ev.filter(e=>!e.rest).length),0); it.parts=song.parts.length;
+  libSaveIdx(); return true;
+}
+function libGet(id){try{return JSON.parse(localStorage.getItem('vp.lib.'+id)||'null');}catch(e){return null;}}
+function libDel(id){try{localStorage.removeItem('vp.lib.'+id);}catch(e){} LIB.idx=LIB.idx.filter(x=>x.id!==id); libSaveIdx(); if(S.song&&S.song.id===id)S.song.id=null;}
+function saveSong(){
+  if(!S.song)return; S.song.tr=S.transpose; S.song.pi=S.pi;
+  if(S.song.id)libPut(S.song);
+  try{localStorage.setItem('vp.last',S.song.id||'');}catch(e){}
+}
+function renderLib(){
+  const box=$('libList'); box.innerHTML='';
+  if(!LIB.idx.length){box.innerHTML='<p class="muted">Nothing saved yet. Open a MusicXML or MIDI file in the Song player, or use “Notes from audio”, and it will appear here.</p>';return;}
+  for(const it of LIB.idx){
+    const row=document.createElement('div'); row.className='lib'+(S.song&&S.song.id===it.id?' cur':'');
+    const open=document.createElement('button'); open.className='btn primary sm'; open.textContent='Open';
+    open.onclick=()=>{const sg=libGet(it.id); if(!sg){libDel(it.id);renderLib();return;} sg.id=it.id; setSong(sg); setTab('player');};
+    const name=document.createElement('input'); name.value=it.title; name.title='Click to rename';
+    name.onchange=()=>{const t=name.value.trim()||'Untitled'; it.title=t; libSaveIdx(); const sg=(S.song&&S.song.id===it.id)?S.song:libGet(it.id); if(sg){sg.title=t; sg.id=it.id; try{localStorage.setItem('vp.lib.'+it.id,songJSON(sg));}catch(e){} if(sg===S.song)$('title').textContent=t;}};
+    const meta=document.createElement('span'); meta.className='muted'; meta.textContent=(it.count||0)+' notes'+(it.parts>1?' · '+it.parts+' parts':'')+' · added '+new Date(it.added).toLocaleDateString();
+    const del=document.createElement('button'); del.className='btn sm'; del.textContent='Delete'; let armed=0;
+    del.onclick=()=>{if(!armed){armed=1;del.textContent='Really delete?';del.style.color='var(--bad)';setTimeout(()=>{armed=0;del.textContent='Delete';del.style.color='';},3000);return;} libDel(it.id); renderLib();};
+    row.append(open,name,meta,del); box.appendChild(row);
+  }
+}
+function setPart(i,resetTr){
   stop(); S.pi=i; P=S.song.parts[i]; P.notes=P.ev.filter(e=>!e.rest); S.idx=0; S.viewX=-20;
-  if(auto){let mn=1e9,mx=-1e9;P.notes.forEach(n=>{if(n.midi<mn)mn=n.midi;if(n.midi>mx)mx=n.midi;});
-    S.transpose=0;}
+  if(resetTr)S.transpose=0;
   refresh();
-  let m='';
   $('msg').textContent=rangeMsg()||(P.notes.length+' notes · '+P.measures.length+' measures · all in position 1');
 }
 function rangeMsg(){
@@ -476,7 +524,7 @@ function refresh(){
   gaps.sort((a,b)=>a-b); const gmin=gaps.length?gaps[Math.floor(gaps.length*0.05)]:1;
   L.pxb=Math.max(44,Math.min(120,24/Math.max(gmin,0.2)));
   let mn=0,mx=8; for(const n of P.notes){if(n.d.pos<mn)mn=n.d.pos;if(n.d.pos>mx)mx=n.d.pos;}
-  L.top=36+Math.max(0,mx-8)*5; L.bottom=L.top+40+Math.max(0,-mn)*5+16; L.h=L.bottom+(S.names?47:8);
+  L.top=36+Math.max(0,mx-8)*5; L.bottom=L.top+40+Math.max(0,-mn)*5+16; L.h=L.bottom+(S.names?36:8);
   L.lp=50+Math.abs(f)*9+8; L.smax=22.5;
   $('bpm').value=S.bpm; $('bpmV').textContent=S.bpm; $('trV').textContent=(S.transpose>0?'+':'')+S.transpose;
 }
@@ -687,7 +735,8 @@ async function transcribe(arrayBuffer,name){
     const first=mono[0].start,shift=Math.floor(first/4)*4;mono.forEach(o=>o.start-=shift);if(mono[0].start<0)mono.forEach(o=>o.start+=4);
     for(let i=0;i<mono.length-1;i++){if(mono[i].start+mono[i].dur>mono[i+1].start)mono[i].dur=Math.max(0.1,mono[i+1].start-mono[i].start);}
     const part=monoToPart(mono,'Melody ('+mono.length+' notes)',4);
-    const song={title:name||'My recording',bpm:Math.round(tp.bpm),fifths:guessFifths(mono),beats:4,beatType:4,parts:[part]};
+    const now_=new Date(),stamp=(now_.getMonth()+1)+'/'+now_.getDate()+' '+now_.getHours()+':'+String(now_.getMinutes()).padStart(2,'0');
+    const song={id:'r_'+Date.now().toString(36),title:(name&&name!=='My recording'?name:'Recording')+' ('+stamp+')',bpm:Math.round(tp.bpm),fifths:guessFifths(mono),beats:4,beatType:4,parts:[part]};
     setSong(song);
     msg('Wrote '+mono.length+' notes at about '+Math.round(tp.bpm)+' BPM'+(fixed?'':' (guessed)')+'. Listen with ▶ and compare with the real song. Use "Fix this note" for wrong notes, then "Save as MIDI file" to keep it.');
   }catch(err){console.error(err);msg('⚠ Could not read that audio ('+(err&&err.message||err)+'). Try an mp3, m4a or wav file.');}
@@ -846,9 +895,7 @@ function drawStaff(now){
     const isCur=e===cur; drawNote(g,e,x,isCur?TH.accent:TH.ink);
     if(S.names){g.textAlign='center';g.textBaseline='alphabetic';g.fillStyle=isCur?TH.accent:TH.ink;g.font=(isCur?'700 ':'600 ')+'11px -apple-system,"Segoe UI",sans-serif';
       g.fillText(spellName(e.d,false),x,L.bottom+13);
-      g.fillStyle=TH.muted;g.font='10px -apple-system,"Segoe UI",sans-serif';const f=e.d.f;g.fillText(f?(f.fin<0?'↑':String(f.fin)):'×',x,L.bottom+26);
-      if(e.d.shift){g.fillStyle=f.pos>1?TH.accent:TH.ink;g.font='700 11px -apple-system,"Segoe UI",sans-serif';g.fillText(String(f.pos),x,L.bottom+40);}
-      else if(f&&f.pos>1&&!f.open){g.fillStyle=TH.accent;g.fillRect(x-6,L.bottom+35.5,12,1.5);}}
+      g.fillStyle=isCur?TH.accent:TH.muted;g.font='700 10px -apple-system,"Segoe UI",sans-serif';g.fillText(SOLF[e.d.step]+(e.d.alter>0?'♯':e.d.alter<0?'♭':''),x,L.bottom+27);}
   }
   // playhead in play mode
   if(S.playing&&S.mode==='play'){const x=sx(px);g.strokeStyle=TH.accent;g.lineWidth=2;g.beginPath();g.moveTo(x,8);g.lineTo(x,L.bottom);g.stroke();}
@@ -860,7 +907,7 @@ function drawStaff(now){
   const f=S.dFifths,shp=[8,5,9,6,3,7,4],flp=[4,7,3,6,2,5,1];
   g.fillStyle=TH.ink;g.font='17px "Segoe UI Symbol","Apple Symbols","Noto Sans Symbols2",sans-serif';g.textAlign='center';g.textBaseline='middle';
   for(let i=0;i<Math.abs(f);i++){g.fillText(f>0?'♯':'♭',44+i*9,yPos(f>0?shp[i]:flp[i])+(f>0?0:-3));}
-  if(S.names){g.fillStyle=TH.muted;g.font='10px -apple-system,"Segoe UI",sans-serif';g.textAlign='left';g.textBaseline='alphabetic';g.fillText('note',6,L.bottom+13);g.fillText('finger',6,L.bottom+26);g.fillText('position',6,L.bottom+39);}
+  if(S.names){g.fillStyle=TH.muted;g.font='10px -apple-system,"Segoe UI",sans-serif';g.textAlign='left';g.textBaseline='alphabetic';g.fillText('note',6,L.bottom+13);g.fillText('name',6,L.bottom+27);}
   g.strokeStyle=TH.line;g.lineWidth=1;g.beginPath();g.moveTo(L.lp+0.5,0);g.lineTo(L.lp+0.5,L.h);g.stroke();
 }
 
@@ -962,15 +1009,15 @@ function frame(now){
   try{
     updateLive(now);
     if(S.playing&&P){ if(S.mode==='play')tickPlay(); else tickWait(now,dt); }
-    if(S.tab==='player'){drawStaff(now);drawBoard(now);drawInfo();} else drawTuner();
+    if(S.tab==='player'){drawStaff(now);drawBoard(now);drawInfo();} else if(S.tab==='tuner')drawTuner();
   }catch(e){console.error(e);}
   requestAnimationFrame(frame);
 }
 
 // ---------- UI wiring ----------
-$('tabPlayer').onclick=()=>setTab('player'); $('tabTuner').onclick=()=>setTab('tuner');
-function setTab(t){S.tab=t;$('player').classList.toggle('hidden',t!=='player');$('tuner').classList.toggle('hidden',t!=='tuner');
-  $('tabPlayer').classList.toggle('on',t==='player');$('tabTuner').classList.toggle('on',t==='tuner'); if(t==='tuner')stop();}
+$('tabPlayer').onclick=()=>setTab('player'); $('tabTuner').onclick=()=>setTab('tuner'); $('tabLib').onclick=()=>setTab('library');
+function setTab(t){S.tab=t;$('player').classList.toggle('hidden',t!=='player');$('tuner').classList.toggle('hidden',t!=='tuner');$('library').classList.toggle('hidden',t!=='library');
+  $('tabPlayer').classList.toggle('on',t==='player');$('tabTuner').classList.toggle('on',t==='tuner');$('tabLib').classList.toggle('on',t==='library'); if(t!=='player')stop(); if(t==='library')renderLib();}
 $('mic').onclick=()=>micToggle();
 $('ref').onchange=e=>{S.A=+e.target.value;save();};
 $('bPlay').onclick=()=>{S.playing?stop():play();};
@@ -981,10 +1028,11 @@ $('modeSeg').querySelectorAll('button').forEach(b=>b.onclick=()=>{stop();S.mode=
 $('bpm').oninput=e=>{const nb=+e.target.value; if(S.playing&&S.mode==='play'&&AC){const b=curBeat();T.anchorBeat=b;T.anchorCtx=AC.currentTime;} S.bpm=nb;$('bpmV').textContent=nb;};
 $('cSound').onchange=e=>{S.sound=e.target.checked;save();}; $('cMetro').onchange=e=>{S.metro=e.target.checked;save();};
 $('cNames').onchange=e=>{S.names=e.target.checked;refresh();save();}; $('cUse4').onchange=e=>{S.use4=e.target.checked;refresh();save();};
-document.querySelectorAll('[data-t]').forEach(b=>b.onclick=()=>{if(!P)return;const was=S.playing;stop();S.transpose=Math.max(-36,Math.min(36,S.transpose+(+b.dataset.t)));refresh();
+document.querySelectorAll('[data-t]').forEach(b=>b.onclick=()=>{if(!P)return;const was=S.playing;stop();S.transpose=Math.max(-36,Math.min(36,S.transpose+(+b.dataset.t)));refresh();saveSong();
   $('msg').textContent=rangeMsg()||'All notes are in position 1.';});
 document.querySelectorAll('[data-s]').forEach(b=>b.onclick=()=>{const c=ac();MIC.mute=performance.now()+2300;MIC.hist=[];tone(+b.dataset.s,c.currentTime+0.02,2.2,0.18,c.destination);});
-$('partSel').onchange=e=>setPart(+e.target.value,true);
+$('partSel').onchange=e=>{setPart(+e.target.value,true);saveSong();};
+$('bpmOrig').onclick=()=>{const nb=origBpm(); if(S.playing&&S.mode==='play'&&AC){const b=curBeat();T.anchorBeat=b;T.anchorCtx=AC.currentTime;} S.bpm=nb;$('bpm').value=nb;$('bpmV').textContent=nb;};
 $('txOpen').onclick=()=>$('txPanel').classList.toggle('hidden');
 $('txRec').onclick=()=>recToggle();
 $('txFile').onchange=async e=>{const f=e.target.files[0];e.target.value='';if(f)transcribe(await f.arrayBuffer(),f.name.replace(/\.[^.]+$/,''));};
@@ -998,6 +1046,9 @@ async function openFile(file){
     else if(u8[0]===0x50&&u8[1]===0x4B)song=parseMusicXML(await unzipMXL(buf));
     else song=parseMusicXML(decodeText(u8));
     if(!song.title)song.title=file.name.replace(/\.[^.]+$/,'');
+    song.id='f_'+hashStr(file.name+'|'+song.parts.map(p=>p.ev.length).join(','));
+    const old=LIB.idx.find(x=>x.id===song.id); if(old)song.title=old.title;
+    $('txMsg').textContent='Record yourself (or the song playing near the mic), or pick an audio file. The app listens for the melody and writes it as notes.';
     setSong(song);
   }catch(err){console.error(err);$('msg').textContent='⚠ '+(err.message||'Could not open this file.');}
 }
@@ -1018,11 +1069,18 @@ function save(){try{localStorage.setItem('vp.set',JSON.stringify({A:S.A,mode:S.m
   try{const s=JSON.parse(localStorage.getItem('vp.set')||'null');if(s){Object.assign(S,s);}}catch(e){}
   $('ref').value=String(S.A);$('cSound').checked=S.sound;$('cMetro').checked=S.metro;$('cNames').checked=S.names;$('cUse4').checked=S.use4;
   $('modeSeg').querySelectorAll('button').forEach(x=>x.classList.toggle('on',x.dataset.m===S.mode));
-  let song=null;try{song=JSON.parse(localStorage.getItem('vp.song')||'null');}catch(e){}
+  libLoad();
+  let song=null;
+  try{const last=localStorage.getItem('vp.last'); if(last){song=libGet(last); if(song)song.id=last;}}catch(e){}
+  if(!song){ // bring over the song saved by the earlier version of this page
+    try{const old=JSON.parse(localStorage.getItem('vp.song')||'null');
+      if(old&&old.parts&&old.parts.length&&!/^(Twinkle Twinkle Little Star|D major scale|G major scale, 2 octaves)$/.test(old.title||'')){old.id='f_'+hashStr((old.title||'')+'|'+old.parts.map(p=>p.ev.length).join(','));song=old;}
+      localStorage.removeItem('vp.song');}catch(e){}
+  }
   try{ if(song&&song.parts&&song.parts.length)setSong(song); else throw 0; }catch(e){setSong(demoSong('twinkle'));$('msg').textContent='Demo song loaded. Open a MusicXML (.musicxml / .mxl / .xml) or MIDI (.mid) file to practice your own.';}
   requestAnimationFrame(frame);
 })();
-window.__vp={S,parseMusicXML,parseMIDI,get P(){return P;},MIC,trackSolo,trackMix,trackToNotes,estimateTempo};
+window.__vp={LIB,S,parseMusicXML,parseMIDI,get P(){return P;},MIC,trackSolo,trackMix,trackToNotes,estimateTempo};
 </script>
 </body>
 </html>
