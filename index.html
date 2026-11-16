@@ -430,7 +430,7 @@ function setSong(song,keep){
 function setPart(i,auto){
   stop(); S.pi=i; P=S.song.parts[i]; P.notes=P.ev.filter(e=>!e.rest); S.idx=0; S.viewX=-20;
   if(auto){let mn=1e9,mx=-1e9;P.notes.forEach(n=>{if(n.midi<mn)mn=n.midi;if(n.midi>mx)mx=n.midi;});
-    let t=0,bs=1e9; for(const c of [0,12,-12,24,-24,36,-36]){if(mn+c<55)continue; const hi=P.notes.filter(n=>n.midi+c>83).length; if(hi<bs){bs=hi;t=c;}} if(bs===1e9){while(mn+t<55)t+=12;} S.transpose=t;}
+    let t=0,bs=1e9; for(const c of [0,12,-12,24,-24,36,-36]){let sc=0; for(const n of P.notes){const m=n.midi+c; sc+=m<55?3:m>86?3:m>83?1:0;} if(sc<bs-1e-9){bs=sc;t=c;}} S.transpose=t;}
   refresh();
   let m='';
   if(auto&&S.transpose)m='Moved '+(S.transpose>0?'up ':'down ')+Math.abs(S.transpose/12)+' octave'+(Math.abs(S.transpose)>12?'s':'')+' to fit the violin. ';
