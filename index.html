@@ -250,16 +250,19 @@ function parseMusicXML(text){
   const song={title:txt(doc,'work-title')||txt(doc,'movement-title')||'',bpm:null,fifths:null,beats:4,beatType:4,parts:[]};
   const TYPES={whole:'whole',half:'half',quarter:'quarter',eighth:'eighth','16th':'16th','32nd':'32nd','64th':'32nd',breve:'whole'};
   for(const part of kids(root,'part')){
-    // choose the voice of the first pitched note on staff 1
-    let voice=null;
-    for(const n of Array.from(part.getElementsByTagName('note'))){
-      if(n.getElementsByTagName('pitch').length&&(txt(n,'staff')||'1')==='1'){voice=txt(n,'voice')||'1';break;}
-    }
-    if(voice===null)continue;
+    // main voice = the one with the most pitched notes on staff 1
+    let mainVoice=null,voice=null;{const cnt={};
+      for(const n of Array.from(part.getElementsByTagName('note'))){
+        if(n.getElementsByTagName('pitch').length&&(txt(n,'staff')||'1')==='1'){const v=txt(n,'voice')||'1';cnt[v]=(cnt[v]||0)+1;}}
+      for(const v in cnt)if(mainVoice===null||cnt[v]>cnt[mainVoice])mainVoice=v;}
+    if(mainVoice===null)continue;
     let div=1,mStart=0,beats=4,beatType=4,lastStart=0,lastPitched=null,tieOpen=false;
     const ev=[],meas=[];
     for(const m of kids(part,'measure')){
       let t=mStart,maxT=mStart;
+      // in a measure where the main voice has no notes, follow whichever voice does
+      {const vs=[];for(const n of Array.from(m.getElementsByTagName('note'))){if(n.getElementsByTagName('pitch').length&&(txt(n,'staff')||'1')==='1')vs.push(txt(n,'voice')||'1');}
+        voice=(!vs.length||vs.includes(mainVoice))?mainVoice:vs[0];}
       for(const el of Array.from(m.children)){
         const nn=el.nodeName;
         if(nn==='attributes'){
