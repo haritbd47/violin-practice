@@ -40,6 +40,7 @@
   .lib input{flex:1;min-width:160px;font:inherit;font-weight:600;padding:7px 8px;border-radius:8px;border:1px solid transparent;background:transparent;color:var(--ink)}
   .lib input:hover,.lib input:focus{border-color:var(--line);background:var(--card)}
   .lib.cur input{color:var(--accent)}
+  #syncForm input{font:inherit;padding:7px 8px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--ink)}
   canvas{display:block}
   /* player */
   .top{display:grid;grid-template-columns:300px minmax(0,1fr);gap:18px;align-items:start}
@@ -158,6 +159,21 @@
     <div class="card">
       <div class="row"><b style="font-size:17px">Library</b><span class="muted">Every file you open is saved here, on this device.</span></div>
       <div id="libList" style="margin-top:10px"></div>
+    </div>
+    <div class="card">
+      <div class="row"><b style="font-size:17px">Sync between devices</b><span class="muted" id="syncStatus">Off. Songs are only kept on this device.</span></div>
+      <div class="row" id="syncForm" style="margin-top:10px">
+        <input id="syOwner" placeholder="GitHub username" autocomplete="off" style="width:170px">
+        <span class="muted">/</span>
+        <input id="syRepo" placeholder="private repository" value="violin-library" autocomplete="off" style="width:170px">
+        <input id="syToken" type="password" placeholder="Access key (github_pat_…)" autocomplete="off" style="flex:1;min-width:220px">
+        <button class="btn primary" id="syConnect">Connect</button>
+      </div>
+      <div class="row hidden" id="syncOnRow" style="margin-top:10px">
+        <span id="syInfo" style="font-weight:600"></span><span class="sp"></span>
+        <button class="btn sm" id="syNow">Sync now</button><button class="btn sm" id="syOff">Disconnect this device</button>
+      </div>
+      <p class="muted" style="margin:10px 0 0">Songs are saved to a private repository on your GitHub, so every device you connect shows the same Library. The access key is kept only in this browser.</p>
     </div>
   </section>
 
@@ -455,13 +471,99 @@ function libLoad(){try{LIB.idx=JSON.parse(localStorage.getItem('vp.lib')||'[]')|
 function libSaveIdx(){try{localStorage.setItem('vp.lib',JSON.stringify(LIB.idx));}catch(e){}}
 function libPut(song){
   if(!song.id)return false;
-  try{localStorage.setItem('vp.lib.'+song.id,songJSON(song));}catch(e){$('msg').textContent='⚠ The library is full. Delete songs you no longer need in the Library tab.';return false;}
-  let it=LIB.idx.find(x=>x.id===song.id); if(!it){it={id:song.id,added:Date.now()};LIB.idx.unshift(it);}
+  let it=LIB.idx.find(x=>x.id===song.id); if(!it){it={id:song.id,added:song.added||Date.now()};LIB.idx.unshift(it);}
+  song.added=it.added;
+  const key='vp.lib.'+song.id,js=songJSON(song);let prev=null;try{prev=localStorage.getItem(key);}catch(e){}
+  if(prev!==js){try{localStorage.setItem(key,js);}catch(e){$('msg').textContent='⚠ The library is full. Delete songs you no longer need in the Library tab.';return false;}
+    if(!SYNC.quiet)syncQueue(song.id);}
   it.title=song.title||'Untitled'; it.count=song.parts.reduce((a,p)=>Math.max(a,p.ev.filter(e=>!e.rest).length),0); it.parts=song.parts.length;
   libSaveIdx(); return true;
 }
 function libGet(id){try{return JSON.parse(localStorage.getItem('vp.lib.'+id)||'null');}catch(e){return null;}}
-function libDel(id){try{localStorage.removeItem('vp.lib.'+id);localStorage.removeItem('vp.orig.'+id);}catch(e){} LIB.idx=LIB.idx.filter(x=>x.id!==id); libSaveIdx(); if(S.song&&S.song.id===id)S.song.id=null;}
+function libDel(id){
+  const it=LIB.idx.find(x=>x.id===id);
+  try{localStorage.removeItem('vp.lib.'+id);localStorage.removeItem('vp.orig.'+id);}catch(e){}
+  LIB.idx=LIB.idx.filter(x=>x.id!==id); libSaveIdx(); if(S.song&&S.song.id===id)S.song.id=null;
+  if(syncOn()&&it&&it.sha){let d=[];try{d=JSON.parse(localStorage.getItem('vp.sync.del')||'[]');}catch(e){} d.push({id,sha:it.sha});try{localStorage.setItem('vp.sync.del',JSON.stringify(d));}catch(e){} syncAll();}
+}
+// ---- sync: the Library is mirrored to a private GitHub repository (songs/<id>.json)
+const SYNC={cfg:null,busy:false,again:false,quiet:false,timers:{},last:0};
+function syncLoad(){try{SYNC.cfg=JSON.parse(localStorage.getItem('vp.sync')||'null');}catch(e){SYNC.cfg=null;}}
+function syncOn(){return !!(SYNC.cfg&&SYNC.cfg.token&&SYNC.cfg.owner&&SYNC.cfg.repo);}
+function timeStr(){const d=new Date();return d.getHours()+':'+String(d.getMinutes()).padStart(2,'0');}
+function ghHeaders(raw){return {'Authorization':'Bearer '+SYNC.cfg.token,'Accept':raw?'application/vnd.github.raw+json':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28'};}
+function ghBase(){return 'https://api.github.com/repos/'+encodeURIComponent(SYNC.cfg.owner)+'/'+encodeURIComponent(SYNC.cfg.repo);}
+function gh(method,path,body,raw){return fetch(ghBase()+'/contents/'+path,{method,headers:ghHeaders(raw),body:body?JSON.stringify(body):undefined,cache:'no-store'});}
+function b64(str){const u=new TextEncoder().encode(str);let t='';for(let i=0;i<u.length;i+=0x8000)t+=String.fromCharCode.apply(null,u.subarray(i,i+0x8000));return btoa(t);}
+function setSyncStatus(t,bad){const el=$('syncStatus');el.textContent=t;el.style.color=bad?'var(--bad)':'';}
+function syncErr(st){return st===401?'GitHub did not accept the access key.':st===403?'The access key is not allowed to do this (it needs “Contents: Read and write” on this repository).':st===404?'Repository not found, or the key cannot see it.':'GitHub answered with error '+st+'.';}
+async function syncPush(id){
+  const it=LIB.idx.find(x=>x.id===id); if(!it)return; let raw=null;try{raw=localStorage.getItem('vp.lib.'+id);}catch(e){} if(!raw)return;
+  const put=sha=>gh('PUT','songs/'+id+'.json',{message:'Save '+id,content:b64(raw),sha:sha||undefined});
+  let r=await put(it.sha);
+  if(r.status===409||r.status===422){const g=await gh('GET','songs/'+id+'.json');const sha=g.ok?(await g.json()).sha:null;r=await put(sha);}
+  if(!r.ok)throw new Error(syncErr(r.status));
+  const j=await r.json(); it.sha=j.content.sha; let cur=null;try{cur=localStorage.getItem('vp.lib.'+id);}catch(e){} if(cur===raw)it.dirty=false; libSaveIdx();
+}
+function syncQueue(id){
+  if(!syncOn())return; const it=LIB.idx.find(x=>x.id===id); if(it){it.dirty=true;libSaveIdx();}
+  clearTimeout(SYNC.timers[id]); SYNC.timers[id]=setTimeout(()=>{if(SYNC.busy){syncQueue(id);return;} syncPush(id).then(()=>setSyncStatus('Saved to GitHub ✓ '+timeStr())).catch(e=>setSyncStatus('⚠ '+e.message,true));},2500);
+}
+async function syncAll(){
+  if(!syncOn())return; if(SYNC.busy){SYNC.again=true;return;} SYNC.busy=true; setSyncStatus('Syncing…');
+  try{
+    let dels=[];try{dels=JSON.parse(localStorage.getItem('vp.sync.del')||'[]');}catch(e){}
+    for(const d of dels.slice()){const r=await gh('DELETE','songs/'+d.id+'.json',{message:'Delete '+d.id,sha:d.sha});
+      if(r.ok||r.status===404||r.status===409||r.status===422){dels=dels.filter(x=>x!==d); gh('GET','originals/'+d.id+'.json').then(async g=>{if(g.ok){const o=await g.json();gh('DELETE','originals/'+d.id+'.json',{message:'Delete '+d.id,sha:o.sha});}}).catch(()=>{});}
+      else throw new Error(syncErr(r.status));}
+    try{localStorage.setItem('vp.sync.del',JSON.stringify(dels));}catch(e){}
+    const r=await gh('GET','songs'); let list=[];
+    if(r.ok)list=(await r.json()).filter(f=>f.type==='file'&&/\.json$/.test(f.name));
+    else if(r.status!==404)throw new Error(syncErr(r.status));
+    else{const m=await fetch(ghBase(),{headers:ghHeaders(),cache:'no-store'}); if(!m.ok)throw new Error(syncErr(m.status));}
+    const remote={}; list.forEach(f=>{remote[f.name.replace(/\.json$/,'')]=f.sha;});
+    let openChanged=false;
+    for(const id in remote){const it=LIB.idx.find(x=>x.id===id);
+      if(it&&(it.dirty||it.sha===remote[id]))continue;
+      if(dels.some(d=>d.id===id))continue;
+      const g=await gh('GET','songs/'+id+'.json',null,true); if(!g.ok)continue; const txt=await g.text(); let sg=null;try{sg=JSON.parse(txt);}catch(e){} if(!sg||!sg.parts||!sg.parts.length)continue;
+      try{localStorage.setItem('vp.lib.'+id,txt);}catch(e){throw new Error('This device\'s storage is full.');}
+      let e=it; if(!e){e={id,added:sg.added||Date.now()};LIB.idx.push(e);}
+      e.title=sg.title||'Untitled'; e.count=sg.parts.reduce((a,p)=>Math.max(a,p.ev.filter(x=>!x.rest).length),0); e.parts=sg.parts.length; e.sha=remote[id]; e.dirty=false;
+      if(S.song&&S.song.id===id)openChanged=true;
+    }
+    for(const it of LIB.idx.slice()){
+      if(remote[it.id]===undefined){
+        if(it.sha&&!it.dirty){try{localStorage.removeItem('vp.lib.'+it.id);localStorage.removeItem('vp.orig.'+it.id);}catch(e){} LIB.idx=LIB.idx.filter(x=>x!==it); if(S.song&&S.song.id===it.id)S.song.id=null;}
+        else{await syncPush(it.id); let oj=null;try{oj=localStorage.getItem('vp.orig.'+it.id);}catch(e){} if(oj)syncOrigPut(it.id,oj);}
+      }else if(it.dirty)await syncPush(it.id);
+    }
+    LIB.idx.sort((a,b)=>(b.added||0)-(a.added||0)); libSaveIdx();
+    if(openChanged&&!S.playing){const at=S.idx,sg=libGet(S.song.id); if(sg){sg.id=S.song.id;SYNC.quiet=true;try{setSong(sg);S.idx=Math.min(at,P.notes.length-1);}finally{SYNC.quiet=false;}}}
+    SYNC.last=Date.now(); setSyncStatus('Synced ✓ '+LIB.idx.length+' song'+(LIB.idx.length===1?'':'s')+' · '+timeStr()); if(S.tab==='library')renderLib();
+  }catch(e){setSyncStatus('⚠ Sync problem: '+(e&&e.message||e),true);}
+  finally{SYNC.busy=false; if(SYNC.again){SYNC.again=false;syncAll();}}
+}
+function syncOrigPut(id,js){ if(!syncOn())return; gh('PUT','originals/'+id+'.json',{message:'Original '+id,content:b64(js)}).catch(()=>{}); }
+function renderSync(){
+  const on=syncOn(); $('syncForm').classList.toggle('hidden',on); $('syncOnRow').classList.toggle('hidden',!on);
+  if(on)$('syInfo').textContent='Connected to '+SYNC.cfg.owner+'/'+SYNC.cfg.repo;
+  else{ if(!$('syOwner').value){const m=/^([a-z0-9-]+)\.github\.io$/i.exec(location.hostname);if(m)$('syOwner').value=m[1];} setSyncStatus('Off. Songs are only kept on this device.'); }
+}
+async function syncConnect(){
+  const owner=$('syOwner').value.trim(),repo=$('syRepo').value.trim(),token=$('syToken').value.trim();
+  if(!owner||!repo||!token){setSyncStatus('Fill in the username, the repository name and the access key.',true);return;}
+  SYNC.cfg={owner,repo,token}; setSyncStatus('Checking…');
+  try{
+    const m=await fetch(ghBase(),{headers:ghHeaders(),cache:'no-store'});
+    if(!m.ok){SYNC.cfg=null;setSyncStatus('⚠ '+syncErr(m.status),true);return;}
+    const info=await m.json();
+    if(!info.private){SYNC.cfg=null;setSyncStatus('⚠ That repository is public. Make it private first, so your songs stay private.',true);return;}
+    try{localStorage.setItem('vp.sync',JSON.stringify(SYNC.cfg));}catch(e){}
+    $('syToken').value=''; renderSync(); await syncAll();
+  }catch(e){SYNC.cfg=null;setSyncStatus('⚠ Could not reach GitHub. Check the internet connection.',true);}
+}
+function syncDisconnect(){SYNC.cfg=null;try{localStorage.removeItem('vp.sync');localStorage.removeItem('vp.sync.del');}catch(e){} LIB.idx.forEach(it=>{delete it.sha;delete it.dirty;});libSaveIdx();renderSync();}
 function saveSong(){
   if(!S.song)return; S.song.tr=S.transpose; S.song.pi=S.pi;
   if(S.song.id)libPut(S.song);
@@ -475,7 +577,7 @@ function renderLib(){
     const open=document.createElement('button'); open.className='btn primary sm'; open.textContent='Open';
     open.onclick=()=>{const sg=libGet(it.id); if(!sg){libDel(it.id);renderLib();return;} sg.id=it.id; setSong(sg); setTab('player');};
     const name=document.createElement('input'); name.value=it.title; name.title='Click to rename';
-    name.onchange=()=>{const t=name.value.trim()||'Untitled'; it.title=t; libSaveIdx(); const sg=(S.song&&S.song.id===it.id)?S.song:libGet(it.id); if(sg){sg.title=t; sg.id=it.id; try{localStorage.setItem('vp.lib.'+it.id,songJSON(sg));}catch(e){} if(sg===S.song)$('title').textContent=t;}};
+    name.onchange=()=>{const t=name.value.trim()||'Untitled'; it.title=t; libSaveIdx(); const sg=(S.song&&S.song.id===it.id)?S.song:libGet(it.id); if(sg){sg.title=t; sg.id=it.id; try{localStorage.setItem('vp.lib.'+it.id,songJSON(sg));}catch(e){} syncQueue(it.id); if(sg===S.song)$('title').textContent=t;}};
     const meta=document.createElement('span'); meta.className='muted'; meta.textContent=(it.count||0)+' notes'+(it.parts>1?' · '+it.parts+' parts':'')+' · added '+new Date(it.added).toLocaleDateString();
     const del=document.createElement('button'); del.className='btn sm'; del.textContent='Delete'; let armed=0;
     del.onclick=()=>{if(!armed){armed=1;del.textContent='Really delete?';del.style.color='var(--bad)';setTimeout(()=>{armed=0;del.textContent='Delete';del.style.color='';},3000);return;} libDel(it.id); renderLib();};
@@ -602,8 +704,9 @@ function undoEdit(){
   P.ev=JSON.parse(u.ev);P.notes=P.ev.filter(e=>!e.rest);S.idx=Math.min(u.idx,P.notes.length-1);refresh();saveSong();updUndo();
   $('msg').textContent='Undid the last change. '+(rangeMsg()||'');
 }
-function restoreOriginal(){
+async function restoreOriginal(){
   if(!S.song)return;const id=S.song.id;let raw=null;try{raw=id&&localStorage.getItem('vp.orig.'+id);}catch(e){}
+  if(!raw&&id&&syncOn()){try{const g=await gh('GET','originals/'+id+'.json',null,true);if(g.ok){raw=await g.text();JSON.parse(raw);try{localStorage.setItem('vp.orig.'+id,raw);}catch(e){}}}catch(e){raw=null;}}
   if(!raw){$('msg').textContent='No original copy is stored for this song. Open the file again with “Open file” to get its original notes back.';return;}
   const sg=JSON.parse(raw);sg.id=id;sg.title=S.song.title;sg.tr=S.transpose;sg.pi=S.pi;const at=S.idx;
   setSong(sg);S.idx=Math.min(at,P.notes.length-1);$('msg').textContent='Original notes restored. '+(rangeMsg()||'');
@@ -873,7 +976,7 @@ function frame(now){
 // ---------- UI wiring ----------
 $('tabPlayer').onclick=()=>setTab('player'); $('tabTuner').onclick=()=>setTab('tuner'); $('tabLib').onclick=()=>setTab('library');
 function setTab(t){S.tab=t;$('player').classList.toggle('hidden',t!=='player');$('tuner').classList.toggle('hidden',t!=='tuner');$('library').classList.toggle('hidden',t!=='library');
-  $('tabPlayer').classList.toggle('on',t==='player');$('tabTuner').classList.toggle('on',t==='tuner');$('tabLib').classList.toggle('on',t==='library'); if(t!=='player')stop(); if(t==='library')renderLib();}
+  $('tabPlayer').classList.toggle('on',t==='player');$('tabTuner').classList.toggle('on',t==='tuner');$('tabLib').classList.toggle('on',t==='library'); if(t!=='player')stop(); if(t==='library'){renderLib();renderSync();if(syncOn())syncAll();}}
 $('mic').onclick=()=>micToggle();
 $('ref').onchange=e=>{S.A=+e.target.value;save();};
 $('bPlay').onclick=()=>{S.playing?stop():play();};
@@ -892,6 +995,9 @@ $('bpmOrig').onclick=()=>{const nb=origBpm(); if(S.playing&&S.mode==='play'&&AC)
 document.querySelectorAll('[data-e]').forEach(b=>b.onclick=()=>editNote(b.dataset.e));
 $('bExport').onclick=()=>exportMIDI();
 $('bUndo').onclick=()=>undoEdit();
+$('syConnect').onclick=()=>syncConnect(); $('syNow').onclick=()=>syncAll();
+{const b=$('syOff');let armed=0;b.onclick=()=>{if(!armed){armed=1;b.textContent='Really disconnect?';setTimeout(()=>{armed=0;b.textContent='Disconnect this device';},3000);return;}armed=0;b.textContent='Disconnect this device';syncDisconnect();};}
+document.addEventListener('visibilitychange',()=>{if(!document.hidden&&syncOn()&&Date.now()-SYNC.last>60000&&!S.playing)syncAll();});
 {const b=$('bOrig');let armed=0;b.onclick=()=>{if(!armed){armed=1;b.textContent='Discard all my fixes?';b.style.color='var(--bad)';setTimeout(()=>{armed=0;b.textContent='Original notes';b.style.color='';},3000);return;}armed=0;b.textContent='Original notes';b.style.color='';restoreOriginal();};}
 $('demoSel').onchange=e=>{if(e.target.value){setSong(demoSong(e.target.value));e.target.value='';}};
 async function openFile(file){
@@ -902,7 +1008,7 @@ async function openFile(file){
     else song=parseMusicXML(decodeText(u8));
     if(!song.title)song.title=file.name.replace(/\.[^.]+$/,'');
     song.id='f_'+hashStr(file.name+'|'+song.parts.map(p=>p.ev.length).join(','));
-    try{localStorage.setItem('vp.orig.'+song.id,songJSON(song));}catch(e){}
+    {const oj=songJSON(song);try{localStorage.setItem('vp.orig.'+song.id,oj);}catch(e){} syncOrigPut(song.id,oj);}
     const old=LIB.idx.find(x=>x.id===song.id); if(old)song.title=old.title;
     setSong(song);
   }catch(err){console.error(err);$('msg').textContent='⚠ '+(err.message||'Could not open this file.');}
@@ -924,7 +1030,7 @@ function save(){try{localStorage.setItem('vp.set',JSON.stringify({A:S.A,mode:S.m
   try{const s=JSON.parse(localStorage.getItem('vp.set')||'null');if(s){Object.assign(S,s);}}catch(e){}
   $('ref').value=String(S.A);$('cSound').checked=S.sound;$('cMetro').checked=S.metro;$('cNames').checked=S.names;$('cUse4').checked=S.use4;
   $('modeSeg').querySelectorAll('button').forEach(x=>x.classList.toggle('on',x.dataset.m===S.mode));
-  libLoad();
+  libLoad(); syncLoad();
   let song=null;
   try{const last=localStorage.getItem('vp.last'); if(last){song=libGet(last); if(song)song.id=last;}}catch(e){}
   if(!song){ // bring over the song saved by the earlier version of this page
@@ -933,9 +1039,10 @@ function save(){try{localStorage.setItem('vp.set',JSON.stringify({A:S.A,mode:S.m
       localStorage.removeItem('vp.song');}catch(e){}
   }
   try{ if(song&&song.parts&&song.parts.length)setSong(song); else throw 0; }catch(e){setSong(demoSong('twinkle'));$('msg').textContent='Demo song loaded. Open a MusicXML (.musicxml / .mxl / .xml) or MIDI (.mid) file to practice your own.';}
+  renderSync(); if(syncOn())setTimeout(syncAll,800);
   requestAnimationFrame(frame);
 })();
-window.__vp={LIB,S,parseMusicXML,parseMIDI,get P(){return P;},MIC};
+window.__vp={LIB,SYNC,S,parseMusicXML,parseMIDI,get P(){return P;},MIC};
 </script>
 </body>
 </html>
