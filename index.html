@@ -194,15 +194,41 @@ function guessFifths(notes){
   let best=0,bs=-1; for(const f of [0,1,-1,2,-2,3,-3,4,-4,5,-5,6]){const t=((f*7)%12+12)%12; let s=0; for(const p of STEP_PC)s+=h[(p+t)%12]; if(s>bs+1e-9){bs=s;best=f;}}
   return best;
 }
-function fingering(m){
-  if(m<55)return null;
-  let si=3; for(let i=0;i<3;i++){if(m<OPEN[i+1]){si=i;break;}}
-  let s=m-OPEN[si];
-  if(S.use4&&s===0&&si>0){si--;s=7;}
-  let fin,note='';
-  if(s===0)fin=0; else if(s<=2){fin=1;if(s===1)note='low';} else if(s<=4){fin=2;if(s===3)note='low';}
-  else if(s<=6){fin=3;if(s===6)note='high';} else if(s===7)fin=4; else fin=-1;
-  return {si,s,fin,note};
+const ODN=[25,29,33,37], POSC=[0,0,1.0,1.1], ROM=['','I','II','III'], ORD=['','1st','2nd','3rd'];
+function noteOptions(d){
+  const out=[],m=d.midi,dn=d.oct*7+d.step;
+  for(let si=0;si<4;si++){const s=m-OPEN[si]; if(s<0||s>12)continue;
+    if(s===0){for(let p=1;p<=3;p++)out.push({si,s,pos:p,fin:0,open:true,c:POSC[p]*0.5+(S.use4&&si>0?2.5:0)});continue;}
+    let dd=dn-ODN[si]; const ds=[0,1,1,2,2,3,3,4,5,5,6,6,7][s]; if(Math.abs(dd-ds)>1||dd<1)dd=ds;
+    for(let p=1;p<=3;p++){const f=dd-p+1; if(f<1||f>4)continue; out.push({si,s,pos:p,fin:f,open:false,c:POSC[p]+(f===4&&!S.use4?0.5:0)});}
+  }
+  return out;
+}
+// Choose string / hand position / finger for every note: stay in 1st position when possible,
+// move to 2nd or 3rd only when needed, and avoid jumping back and forth inside a phrase.
+function assignFingering(){
+  const layers=[];
+  for(const n of P.notes){
+    const m=n.d.midi; n.d.f=null; n.d.shift=false; n.d.hand=1;
+    if(m<55)continue;
+    const opts=noteOptions(n.d);
+    if(!opts.length){n.d.f={si:3,s:m-76,fin:-1,pos:0,high:true,note:''};continue;}
+    const layer=opts.map(o=>({o,n,cost:o.c,back:-1}));
+    if(layers.length){const pl=layers[layers.length-1];
+      for(const x of layer){let best=1e9,bi=-1;
+        for(let i=0;i<pl.length;i++){const a=pl[i];let t=0;
+          if(a.o.pos!==x.o.pos){const gap=n.start-(a.n.start+a.n.dur);{const dp=Math.abs(a.o.pos-x.o.pos);t+=(a.o.open||x.o.open||gap>=0.5)?0.8+0.2*dp:2.5+dp;}}
+          const dsx=Math.abs(a.o.si-x.o.si);t+=dsx===0?0:dsx===1?0.2:dsx;
+          const c=a.cost+t;if(c<best){best=c;bi=i;}}
+        x.cost+=best;x.back=bi;}}
+    layers.push(layer);
+  }
+  if(layers.length){let li=layers.length-1,bi=0;layers[li].forEach((x,i)=>{if(x.cost<layers[li][bi].cost)bi=i;});
+    for(;li>=0;li--){const x=layers[li][bi],o=x.o;let note='';
+      if(o.pos===1&&!o.open){if((o.fin===1&&o.s===1)||(o.fin===2&&o.s===3)||(o.fin===4&&o.s===6))note='low';else if(o.fin===3&&o.s===6)note='high';}
+      x.n.d.f={si:o.si,s:o.s,fin:o.fin,pos:o.pos,open:o.open,note};bi=x.back;}}
+  let hand=1;
+  for(const n of P.notes){const f=n.d.f; if(f&&!f.open&&!f.high){if(f.pos!==hand){n.d.shift=true;hand=f.pos;}} n.d.hand=hand;}
 }
 
 // ---------- parsers ----------
@@ -404,13 +430,19 @@ function setSong(song,keep){
 function setPart(i,auto){
   stop(); S.pi=i; P=S.song.parts[i]; P.notes=P.ev.filter(e=>!e.rest); S.idx=0; S.viewX=-20;
   if(auto){let mn=1e9,mx=-1e9;P.notes.forEach(n=>{if(n.midi<mn)mn=n.midi;if(n.midi>mx)mx=n.midi;});
-    let t=0; while(mn+t<55)t+=12; while(mx+t>100&&mn+t-12>=55)t-=12; S.transpose=t;}
+    let t=0,bs=1e9; for(const c of [0,12,-12,24,-24,36,-36]){if(mn+c<55)continue; const hi=P.notes.filter(n=>n.midi+c>83).length; if(hi<bs){bs=hi;t=c;}} if(bs===1e9){while(mn+t<55)t+=12;} S.transpose=t;}
   refresh();
   let m='';
-  const low=P.notes.filter(n=>n.d.midi<55).length;
-  if(auto&&S.transpose)m='Moved '+(S.transpose>0?'up ':'down ')+Math.abs(S.transpose/12)+' octave'+(Math.abs(S.transpose)>12?'s':'')+' to fit the violin\'s range. ';
-  if(low)m+=low+' notes are below the violin\'s lowest note (G3) — transpose up. ';
-  $('msg').textContent=m||(P.notes.length+' notes · '+P.measures.length+' measures');
+  if(auto&&S.transpose)m='Moved '+(S.transpose>0?'up ':'down ')+Math.abs(S.transpose/12)+' octave'+(Math.abs(S.transpose)>12?'s':'')+' to fit the violin. ';
+  $('msg').textContent=m+rangeMsg()||(P.notes.length+' notes · '+P.measures.length+' measures');
+}
+function rangeMsg(){
+  const low=P.notes.filter(n=>n.d.midi<55).length, high=P.notes.filter(n=>n.d.f&&n.d.f.high).length, up=P.notes.filter(n=>n.d.f&&n.d.f.pos>1&&!n.d.f.open).length;
+  let m=''; const pl=(n,a,b)=>n+(n===1?' note '+a:' notes '+b);
+  if(low)m+=pl(low,'is','are')+' below the violin\'s lowest note (G3) — transpose up. ';
+  if(high)m+=pl(high,'is','are')+' above 3rd position — try −8ve. ';
+  if(!low&&!high)m+=up?(pl(up,'uses','use')+' 2nd or 3rd position; the rest are in 1st position.'):'';
+  return m;
 }
 function refresh(){
   if(!P)return;
@@ -427,15 +459,16 @@ function refresh(){
     if(e.mi!==curM){curM=e.mi;state={};}
     const k=step+'_'+oct, cur=(k in state)?state[k]:keyAlter(step,f);
     const acc=alter!==cur?alter:null; state[k]=alter;
-    e.d={midi,step,alter,oct,pos:(oct-4)*7+step-2,acc,f:fingering(midi)};
+    e.d={midi,step,alter,oct,pos:(oct-4)*7+step-2,acc,f:null};
   }
+  assignFingering();
   // layout
   const gaps=[];for(let i=1;i<P.notes.length;i++){const g=P.notes[i].start-P.notes[i-1].start;if(g>0.05)gaps.push(g);}
   gaps.sort((a,b)=>a-b); const gmin=gaps.length?gaps[Math.floor(gaps.length*0.05)]:1;
   L.pxb=Math.max(44,Math.min(120,24/Math.max(gmin,0.2)));
-  let mn=0,mx=8,smax=8; for(const n of P.notes){if(n.d.pos<mn)mn=n.d.pos;if(n.d.pos>mx)mx=n.d.pos;if(n.d.f&&n.d.f.s>smax)smax=n.d.f.s;}
-  L.top=36+Math.max(0,mx-8)*5; L.bottom=L.top+40+Math.max(0,-mn)*5+16; L.h=L.bottom+(S.names?34:8);
-  L.lp=50+Math.abs(f)*9+8; L.smax=Math.min(19,smax+1);
+  let mn=0,mx=8; for(const n of P.notes){if(n.d.pos<mn)mn=n.d.pos;if(n.d.pos>mx)mx=n.d.pos;}
+  L.top=36+Math.max(0,mx-8)*5; L.bottom=L.top+40+Math.max(0,-mn)*5+16; L.h=L.bottom+(S.names?47:8);
+  L.lp=50+Math.abs(f)*9+8; L.smax=12;
   $('bpm').value=S.bpm; $('bpmV').textContent=S.bpm; $('trV').textContent=(S.transpose>0?'+':'')+S.transpose;
 }
 const GAP=24;
@@ -619,7 +652,7 @@ function drawStaff(now){
   const M=P.measures;
   for(let i=0;i<M.length;i++){const x=sx(i*GAP+M[i].start*L.pxb); if(x<L.lp-40||x>w+10)continue;
     g.strokeStyle=TH.staff;g.lineWidth=1.2;g.beginPath();g.moveTo(x+0.5,yPos(8));g.lineTo(x+0.5,yPos(0));g.stroke();
-    g.fillStyle=TH.muted;g.fillText(M[i].num,x+4,yPos(8)-8-Math.max(0,(L.top-36)*0+0));}
+    g.fillStyle=TH.muted;g.fillText(M[i].num,x+4,13);}
   {const lm=M[M.length-1],x=sx(M.length*GAP+(lm.start+lm.len)*L.pxb);g.strokeStyle=TH.staff;g.lineWidth=3;g.beginPath();g.moveTo(x,yPos(8));g.lineTo(x,yPos(0));g.stroke();}
   // events
   for(const e of P.ev){const x=sx(xEv(e)); if(x<L.lp-30||x>w+30)continue;
@@ -627,7 +660,9 @@ function drawStaff(now){
     const isCur=e===cur; drawNote(g,e,x,isCur?TH.accent:TH.ink);
     if(S.names){g.textAlign='center';g.textBaseline='alphabetic';g.fillStyle=isCur?TH.accent:TH.ink;g.font=(isCur?'700 ':'600 ')+'11px -apple-system,"Segoe UI",sans-serif';
       g.fillText(spellName(e.d,false),x,L.bottom+13);
-      g.fillStyle=TH.muted;g.font='10px -apple-system,"Segoe UI",sans-serif';const f=e.d.f;g.fillText(f?(f.fin<0?'↑':String(f.fin)):'×',x,L.bottom+26);}
+      g.fillStyle=TH.muted;g.font='10px -apple-system,"Segoe UI",sans-serif';const f=e.d.f;g.fillText(f?(f.fin<0?'↑':String(f.fin)):'×',x,L.bottom+26);
+      if(e.d.shift){g.fillStyle=f.pos>1?TH.accent:TH.ink;g.font='700 11px Georgia,"Times New Roman",serif';g.fillText(ROM[f.pos],x,L.bottom+40);}
+      else if(f&&f.pos>1&&!f.open){g.fillStyle=TH.accent;g.fillRect(x-6,L.bottom+35.5,12,1.5);}}
   }
   // playhead in play mode
   if(S.playing&&S.mode==='play'){const x=sx(px);g.strokeStyle=TH.accent;g.lineWidth=2;g.beginPath();g.moveTo(x,8);g.lineTo(x,L.bottom);g.stroke();}
@@ -639,25 +674,32 @@ function drawStaff(now){
   const f=S.dFifths,shp=[8,5,9,6,3,7,4],flp=[4,7,3,6,2,5,1];
   g.fillStyle=TH.ink;g.font='17px "Segoe UI Symbol","Apple Symbols","Noto Sans Symbols2",sans-serif';g.textAlign='center';g.textBaseline='middle';
   for(let i=0;i<Math.abs(f);i++){g.fillText(f>0?'♯':'♭',44+i*9,yPos(f>0?shp[i]:flp[i])+(f>0?0:-3));}
-  if(S.names){g.fillStyle=TH.muted;g.font='10px -apple-system,"Segoe UI",sans-serif';g.textAlign='left';g.textBaseline='alphabetic';g.fillText('note',6,L.bottom+13);g.fillText('finger',6,L.bottom+26);}
+  if(S.names){g.fillStyle=TH.muted;g.font='10px -apple-system,"Segoe UI",sans-serif';g.textAlign='left';g.textBaseline='alphabetic';g.fillText('note',6,L.bottom+13);g.fillText('finger',6,L.bottom+26);g.fillText('position',6,L.bottom+39);}
   g.strokeStyle=TH.line;g.lineWidth=1;g.beginPath();g.moveTo(L.lp+0.5,0);g.lineTo(L.lp+0.5,L.h);g.stroke();
 }
 
 function drawBoard(now){
   const cv=$('board'); const avail=Math.min(300,Math.max(150,document.querySelector('main').clientWidth*0.46)); const k=avail/300;
   const g=fit(cv,300*k,330*k); g.scale(k,k);
-  const cx=150,NY=64,LEN=250,SM=L.smax||9;
+  const cx=132,NY=64,LEN=250,SM=L.smax||12;
   const yS=s=>NY+LEN*(1-Math.pow(2,-s/12))/(1-Math.pow(2,-SM/12));
   const xS=(i,y)=>{const u=(y-NY)/LEN;return cx+(i-1.5)*(30+u*16);};
   // scroll / pegbox
   g.fillStyle=TH.board;g.beginPath();if(g.roundRect)g.roundRect(cx-42,24,84,30,14);else g.rect(cx-42,24,84,30);g.fill();
   // fingerboard
   g.beginPath();g.moveTo(cx-62,NY);g.lineTo(cx+62,NY);g.lineTo(cx+92,NY+LEN+8);g.lineTo(cx-92,NY+LEN+8);g.closePath();g.fill();
+  const cur0=P&&P.notes[S.idx], hp=(cur0&&cur0.d.hand)||1, hwAt=y=>62+((y-NY)/LEN)*30;
+  // hand-position zone (where the four fingers sit)
+  {const R=[[0,0],[0.6,7.5],[2.6,9.5],[4.6,11.3]][hp],y1=yS(R[0]),y2=yS(R[1]);
+    g.fillStyle=hp>1?TH.accent:'#ffffff';g.globalAlpha=hp>1?0.30:0.10;g.beginPath();g.moveTo(cx-hwAt(y1),y1);g.lineTo(cx+hwAt(y1),y1);g.lineTo(cx+hwAt(y2),y2);g.lineTo(cx-hwAt(y2),y2);g.closePath();g.fill();g.globalAlpha=1;
+    const ym=(y1+y2)/2,xr=cx+hwAt(ym)+7;g.textAlign='left';g.textBaseline='middle';g.fillStyle=hp>1?TH.accent:TH.muted;
+    g.font='700 13px -apple-system,"Segoe UI",sans-serif';g.fillText(ORD[hp],xr,ym-8);g.font='11px -apple-system,"Segoe UI",sans-serif';g.fillText('position',xr,ym+7);
+    g.strokeStyle=hp>1?TH.accent:TH.muted;g.lineWidth=2;g.beginPath();g.moveTo(xr-4,y1+2);g.lineTo(xr-4,y2-2);g.stroke();}
   // tapes (first-position guide)
   g.font='11px -apple-system,"Segoe UI",sans-serif';g.textBaseline='middle';
-  [[2,'1'],[4,'2'],[5,'3'],[7,'4']].forEach(([s,lab])=>{if(s>SM)return;const y=yS(s),u=(y-NY)/LEN,hw=62+u*30;
+  [[2,'1'],[4,'2'],[5,'3'],[7,'4']].forEach(([s,lab])=>{if(s>SM)return;const y=yS(s),hw=hwAt(y);
     g.strokeStyle='rgba(255,255,255,.22)';g.lineWidth=1.5;g.beginPath();g.moveTo(cx-hw,y);g.lineTo(cx+hw,y);g.stroke();
-    g.fillStyle=TH.muted;g.textAlign='right';g.fillText(lab,cx-hw-6,y);});
+    if(hp===1){g.fillStyle=TH.muted;g.textAlign='right';g.fillText(lab,cx-hw-6,y);}});
   // nut
   g.fillStyle='#e9e2d2';g.fillRect(cx-63,NY-4,126,5);
   const cur=P&&P.notes[S.idx], nxt=P&&P.notes[S.idx+1], cf=cur&&cur.d.f;
@@ -691,10 +733,15 @@ function drawInfo(){
   setText('now',cur?spellName(cur.d,true):'–');
   let wh='';
   if(cur){const f=cur.d.f; if(!f)wh='Below the violin range — transpose up';
-    else if(f.fin<0)wh=SNAME[f.si]+' string · shift up (higher position)';
-    else wh=SNAME[f.si]+' string · '+(f.note?f.note+' ':'')+FN[f.fin];}
-  setText('where',wh);
-  setText('next',nxt?('Next: '+spellName(nxt.d,true)+(nxt.d.f?' — '+SNAME[nxt.d.f.si]+(nxt.d.f.fin<0?' ↑':nxt.d.f.fin===0?' open':' '+nxt.d.f.fin):'')):'');
+    else if(f.high)wh='Too high for 3rd position — transpose down (−8ve)';
+    else if(f.open)wh=SNAME[f.si]+' string · open string';
+    else wh=SNAME[f.si]+' string · <span style="color:'+(f.pos>1?'var(--accent)':'inherit')+'">'+ORD[f.pos]+' position</span> · '+(f.note?f.note+' ':'')+FN[f.fin]+(cur.d.shift?' <span class="muted">(shift '+(f.pos>((S.idx>0&&P.notes[S.idx-1].d.hand)||1)?'up':'back down')+')</span>':'');}
+  setText('where',wh,true);
+  let nx='';
+  if(nxt){const f=nxt.d.f;nx='Next: '+spellName(nxt.d,true);
+    if(f&&!f.high)nx+=' — '+SNAME[f.si]+' string, '+(f.open?'open':'finger '+f.fin)+(nxt.d.shift?' · <b style="color:var(--accent)">shift to '+ORD[f.pos]+' position</b>':'');
+    else if(f&&f.high)nx+=' — too high';}
+  setText('next',nx,true);
   let st='';
   if(S.playing){ if(S.mode==='play')st=S.countIn?('Count-in: '+S.countIn):'Playing — note '+(S.idx+1)+' / '+P.notes.length;
     else st='Listening — play the note ('+(S.idx+1)+' / '+P.notes.length+')'; }
@@ -747,7 +794,7 @@ $('bpm').oninput=e=>{const nb=+e.target.value; if(S.playing&&S.mode==='play'&&AC
 $('cSound').onchange=e=>{S.sound=e.target.checked;save();}; $('cMetro').onchange=e=>{S.metro=e.target.checked;save();};
 $('cNames').onchange=e=>{S.names=e.target.checked;refresh();save();}; $('cUse4').onchange=e=>{S.use4=e.target.checked;refresh();save();};
 document.querySelectorAll('[data-t]').forEach(b=>b.onclick=()=>{if(!P)return;const was=S.playing;stop();S.transpose=Math.max(-36,Math.min(36,S.transpose+(+b.dataset.t)));refresh();
-  const low=P.notes.filter(n=>n.d.midi<55).length;$('msg').textContent=low?low+' notes are below the violin\'s lowest note (G3) — transpose up.':'';});
+  $('msg').textContent=rangeMsg()||'All notes are in 1st position.';});
 document.querySelectorAll('[data-s]').forEach(b=>b.onclick=()=>{const c=ac();MIC.mute=performance.now()+2300;MIC.hist=[];tone(+b.dataset.s,c.currentTime+0.02,2.2,0.18,c.destination);});
 $('partSel').onchange=e=>setPart(+e.target.value,true);
 $('demoSel').onchange=e=>{if(e.target.value){setSong(demoSong(e.target.value));e.target.value='';}};
