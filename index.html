@@ -142,8 +142,10 @@
         <div class="grp"><span class="muted">Fix this note</span>
           <button class="btn sm" data-e="-1">♭ lower</button><button class="btn sm" data-e="1">♯ higher</button>
           <button class="btn sm" data-e="-12">−8ve</button><button class="btn sm" data-e="12">+8ve</button>
-          <button class="btn sm" data-e="split">Split in two</button><button class="btn sm" data-e="del">Delete</button></div>
+          <button class="btn sm" data-e="split">Split in two</button><button class="btn sm" data-e="del">Delete</button>
+          <button class="btn sm" id="bUndo" disabled>↶ Undo</button></div>
         <span class="sp"></span>
+        <button class="btn sm" id="bOrig">Original notes</button>
         <button class="btn sm" id="bExport">Save as MIDI file</button>
       </div>
         </div>
@@ -459,7 +461,7 @@ function libPut(song){
   libSaveIdx(); return true;
 }
 function libGet(id){try{return JSON.parse(localStorage.getItem('vp.lib.'+id)||'null');}catch(e){return null;}}
-function libDel(id){try{localStorage.removeItem('vp.lib.'+id);}catch(e){} LIB.idx=LIB.idx.filter(x=>x.id!==id); libSaveIdx(); if(S.song&&S.song.id===id)S.song.id=null;}
+function libDel(id){try{localStorage.removeItem('vp.lib.'+id);localStorage.removeItem('vp.orig.'+id);}catch(e){} LIB.idx=LIB.idx.filter(x=>x.id!==id); libSaveIdx(); if(S.song&&S.song.id===id)S.song.id=null;}
 function saveSong(){
   if(!S.song)return; S.song.tr=S.transpose; S.song.pi=S.pi;
   if(S.song.id)libPut(S.song);
@@ -481,6 +483,7 @@ function renderLib(){
   }
 }
 function setPart(i,resetTr){
+  UNDO.length=0; updUndo();
   stop(); S.pi=i; P=S.song.parts[i]; P.notes=P.ev.filter(e=>!e.rest); S.idx=0; S.viewX=-20;
   if(resetTr)S.transpose=0;
   refresh();
@@ -591,8 +594,24 @@ function updateLive(now){
 
 
 // ---------- note fixing and MIDI export ----------
+const UNDO=[];
+function evJSON(){return JSON.stringify(P.ev,(k,v)=>(k==='d'||k==='mi')?undefined:v);}
+function updUndo(){$('bUndo').disabled=!UNDO.length;}
+function undoEdit(){
+  if(!P||!UNDO.length)return;stop();const u=UNDO.pop();
+  P.ev=JSON.parse(u.ev);P.notes=P.ev.filter(e=>!e.rest);S.idx=Math.min(u.idx,P.notes.length-1);refresh();saveSong();updUndo();
+  $('msg').textContent='Undid the last change. '+(rangeMsg()||'');
+}
+function restoreOriginal(){
+  if(!S.song)return;const id=S.song.id;let raw=null;try{raw=id&&localStorage.getItem('vp.orig.'+id);}catch(e){}
+  if(!raw){$('msg').textContent='No original copy is stored for this song. Open the file again with “Open file” to get its original notes back.';return;}
+  const sg=JSON.parse(raw);sg.id=id;sg.title=S.song.title;sg.tr=S.transpose;sg.pi=S.pi;const at=S.idx;
+  setSong(sg);S.idx=Math.min(at,P.notes.length-1);$('msg').textContent='Original notes restored. '+(rangeMsg()||'');
+}
 function editNote(kind){
   if(!P||!P.notes.length)return;const n=P.notes[S.idx];if(!n)return;stop();
+  if(kind==='del'&&P.notes.length<2)return;
+  UNDO.push({ev:evJSON(),idx:S.idx});if(UNDO.length>50)UNDO.shift();updUndo();
   if(kind==='del'){if(P.notes.length<2)return;P.ev.splice(P.ev.indexOf(n),1);}
   else if(kind==='split'){const h=n.dur/2,dt=durType(Math.max(0.125,h));const b={midi:n.midi,step:n.step,alter:n.alter,oct:n.oct,start:n.start+h,dur:h,type:dt[0],dots:dt[1]};n.dur=h;n.type=dt[0];n.dots=dt[1];P.ev.splice(P.ev.indexOf(n)+1,0,b);}
   else{n.midi=Math.max(21,Math.min(108,n.midi+(+kind)));n.step=null;}
@@ -872,6 +891,8 @@ $('partSel').onchange=e=>{setPart(+e.target.value,true);saveSong();};
 $('bpmOrig').onclick=()=>{const nb=origBpm(); if(S.playing&&S.mode==='play'&&AC){const b=curBeat();T.anchorBeat=b;T.anchorCtx=AC.currentTime;} S.bpm=nb;$('bpm').value=nb;$('bpmV').textContent=nb;};
 document.querySelectorAll('[data-e]').forEach(b=>b.onclick=()=>editNote(b.dataset.e));
 $('bExport').onclick=()=>exportMIDI();
+$('bUndo').onclick=()=>undoEdit();
+{const b=$('bOrig');let armed=0;b.onclick=()=>{if(!armed){armed=1;b.textContent='Discard all my fixes?';b.style.color='var(--bad)';setTimeout(()=>{armed=0;b.textContent='Original notes';b.style.color='';},3000);return;}armed=0;b.textContent='Original notes';b.style.color='';restoreOriginal();};}
 $('demoSel').onchange=e=>{if(e.target.value){setSong(demoSong(e.target.value));e.target.value='';}};
 async function openFile(file){
   try{
@@ -881,6 +902,7 @@ async function openFile(file){
     else song=parseMusicXML(decodeText(u8));
     if(!song.title)song.title=file.name.replace(/\.[^.]+$/,'');
     song.id='f_'+hashStr(file.name+'|'+song.parts.map(p=>p.ev.length).join(','));
+    try{localStorage.setItem('vp.orig.'+song.id,songJSON(song));}catch(e){}
     const old=LIB.idx.find(x=>x.id===song.id); if(old)song.title=old.title;
     setSong(song);
   }catch(err){console.error(err);$('msg').textContent='⚠ '+(err.message||'Could not open this file.');}
