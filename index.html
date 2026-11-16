@@ -90,8 +90,18 @@
       <div class="row">
         <label class="btn primary">Open file<input id="file" type="file"></label>
         <select id="demoSel"><option value="">Built-in…</option><option value="twinkle">Twinkle Twinkle (A major)</option><option value="dscale">D major scale</option><option value="gscale">G major scale, 2 octaves</option></select>
+        <button class="btn" id="txOpen">🎙 Notes from audio</button>
         <span id="title"></span>
         <select id="partSel" class="hidden"></select>
+      </div>
+      <div id="txPanel" class="hidden" style="margin-top:10px;padding-top:10px;border-top:1px solid var(--line)">
+        <div class="row">
+          <select id="txMode"><option value="solo">One melody: humming, whistling, singing, one instrument</option><option value="mix">Full song with music behind it (rough)</option></select>
+          <span class="muted">Tempo</span><input id="txBpm" type="number" min="40" max="240" placeholder="auto" style="width:84px">
+          <button class="btn primary" id="txRec">● Record</button>
+          <label class="btn">Choose audio file<input id="txFile" type="file" accept="audio/*,video/*,.mp3,.m4a,.wav,.aac,.ogg,.flac"></label>
+        </div>
+        <div id="txMsg" class="muted" style="margin-top:6px">Record yourself (or the song playing near the mic), or pick an audio file. The app listens for the melody and writes it as notes.</div>
       </div>
       <div id="msg" class="muted" style="margin-top:6px">Open a MusicXML (.musicxml / .mxl / .xml) or MIDI (.mid) file.</div>
     </div>
@@ -133,6 +143,14 @@
         <label class="chk"><input type="checkbox" id="cUse4"> 4th finger instead of open string</label>
         <span class="sp"></span>
         <span class="muted">Tap a note to jump there · drag to scroll · Space = play/pause</span>
+      </div>
+      <div class="row ctl">
+        <div class="grp"><span class="muted">Fix this note</span>
+          <button class="btn sm" data-e="-1">♭ lower</button><button class="btn sm" data-e="1">♯ higher</button>
+          <button class="btn sm" data-e="-12">−8ve</button><button class="btn sm" data-e="12">+8ve</button>
+          <button class="btn sm" data-e="split">Split in two</button><button class="btn sm" data-e="del">Delete</button></div>
+        <span class="sp"></span>
+        <button class="btn sm" id="bExport">Save as MIDI file</button>
       </div>
         </div>
       </div>
@@ -321,6 +339,29 @@ function decodeText(u8){
   return new TextDecoder('utf-8').decode(u8);
 }
 
+function monoToPart(mono,name,mlen){
+    const ev=[]; const endAll=mono[mono.length-1].start+mono[mono.length-1].dur;
+    const nm=Math.max(1,Math.ceil((endAll-1e-6)/mlen)); const measures=[];
+    for(let i=0;i<nm;i++)measures.push({start:i*mlen,len:mlen,num:String(i+1)});
+    const q=v=>Math.round(v*4)/4;
+    const addRests=(a,b)=>{ // split rests at barlines
+      a=q(a);b=q(b); while(b-a>=0.249){const mEnd=(Math.floor(a/mlen+1e-6)+1)*mlen; const e=Math.min(b,mEnd); const dd=e-a;
+        const full=Math.abs(dd-mlen)<1e-6; const dt=durType(dd); ev.push({rest:true,start:a,dur:dd,type:full?'whole':dt[0],dots:full?0:dt[1]}); a=e;}};
+    let cursor=0;
+    mono.forEach((n,i)=>{
+      addRests(cursor,n.start);
+      const nx=mono[i+1]; let nd=n.dur;
+      if(nx){const gap=nx.start-(n.start+n.dur); if(gap<Math.max(0.13,0.35*n.dur))nd=nx.start-n.start;}
+      let end=n.start+nd; const r2=Math.round(end*2)/2; if(!(nx&&Math.abs(end-nx.start)<1e-6))end=(Math.abs(r2-end)<=0.15*nd+0.05&&r2>n.start)?r2:Math.max(n.start+0.25,q(end));
+      if(nx&&end>nx.start)end=nx.start;
+      const dt=durType(Math.max(0.125,end-n.start));
+      ev.push({midi:n.midi,start:n.start,dur:n.dur,type:dt[0],dots:dt[1]});
+      cursor=end;
+    });
+    ev.sort((a,b)=>a.start-b.start);
+    return {name,ev,measures};
+}
+
 function parseMIDI(buf){
   const d=new DataView(buf),u8=new Uint8Array(buf);
   const id=o=>String.fromCharCode(u8[o],u8[o+1],u8[o+2],u8[o+3]);
@@ -362,26 +403,7 @@ function parseMIDI(buf){
       if(pv&&n.start<pv.start+0.04)continue;            // same onset: keep the highest
       if(pv&&pv.start+pv.dur>n.start)pv.dur=n.start-pv.start;
       mono.push({midi:n.midi,start:n.start,dur:n.dur});}
-    const ev=[]; const endAll=mono[mono.length-1].start+mono[mono.length-1].dur;
-    const nm=Math.max(1,Math.ceil((endAll-1e-6)/mlen)); const measures=[];
-    for(let i=0;i<nm;i++)measures.push({start:i*mlen,len:mlen,num:String(i+1)});
-    const q=v=>Math.round(v*4)/4;
-    const addRests=(a,b)=>{ // split rests at barlines
-      a=q(a);b=q(b); while(b-a>=0.249){const mEnd=(Math.floor(a/mlen+1e-6)+1)*mlen; const e=Math.min(b,mEnd); const dd=e-a;
-        const full=Math.abs(dd-mlen)<1e-6; const dt=durType(dd); ev.push({rest:true,start:a,dur:dd,type:full?'whole':dt[0],dots:full?0:dt[1]}); a=e;}};
-    let cursor=0;
-    mono.forEach((n,i)=>{
-      addRests(cursor,n.start);
-      const nx=mono[i+1]; let nd=n.dur;
-      if(nx){const gap=nx.start-(n.start+n.dur); if(gap<Math.max(0.13,0.35*n.dur))nd=nx.start-n.start;}
-      let end=n.start+nd; const r2=Math.round(end*2)/2; if(!(nx&&Math.abs(end-nx.start)<1e-6))end=(Math.abs(r2-end)<=0.15*nd+0.05&&r2>n.start)?r2:Math.max(n.start+0.25,q(end));
-      if(nx&&end>nx.start)end=nx.start;
-      const dt=durType(Math.max(0.125,end-n.start));
-      ev.push({midi:n.midi,start:n.start,dur:n.dur,type:dt[0],dots:dt[1]});
-      cursor=end;
-    });
-    ev.sort((a,b)=>a.start-b.start);
-    song.parts.push({name:tr.name+' ('+mono.length+' notes)',ev,measures});
+    const pt=monoToPart(mono,tr.name+' ('+mono.length+' notes)',mlen); song.parts.push(pt);
   }
   if(song.fifths===null)song.fifths=guessFifths(song.parts[0].ev.filter(e=>!e.rest));
   return song;
@@ -412,8 +434,9 @@ function setSong(song,keep){
   ps.classList.toggle('hidden',song.parts.length<2);
   $('title').textContent=song.title||'';
   setPart(0,true);
-  try{localStorage.setItem('vp.song',JSON.stringify(song,(k,v)=>(k==='d'||k==='mi')?undefined:v));}catch(e){}
+  saveSong();
 }
+function saveSong(){try{localStorage.setItem('vp.song',JSON.stringify(S.song,(k,v)=>(k==='d'||k==='mi'||k==='notes')?undefined:v));}catch(e){}}
 function setPart(i,auto){
   stop(); S.pi=i; P=S.song.parts[i]; P.notes=P.ev.filter(e=>!e.rest); S.idx=0; S.viewX=-20;
   if(auto){let mn=1e9,mx=-1e9;P.notes.forEach(n=>{if(n.midi<mn)mn=n.midi;if(n.midi>mx)mx=n.midi;});
@@ -523,6 +546,183 @@ function updateLive(now){
   while(MIC.hist.length&&now-MIC.hist[0].t>110)MIC.hist.shift();
   if(MIC.hist.length>=2){const v=MIC.hist.map(h=>h.m).sort((a,b)=>a-b);const m=v[v.length>>1];S.live={m,f:S.A*Math.pow(2,(m-69)/12)};}
   else if(!MIC.hist.length)S.live=null;
+}
+
+
+// ---------- notes from audio ----------
+const tickUI=()=>new Promise(r=>setTimeout(r,0));
+function mixDown(ab,target){
+  const sr=ab.sampleRate,f=Math.max(1,Math.round(sr/target)),n=Math.min(ab.length,Math.floor(sr*420));
+  const out=new Float32Array(Math.floor(n/f)),c0=ab.getChannelData(0),c1=ab.numberOfChannels>1?ab.getChannelData(1):null;
+  for(let i=0;i<out.length;i++){let a=0;for(let k=0;k<f;k++){const j=i*f+k;a+=c1?(c0[j]+c1[j])*.5:c0[j];}out[i]=a/f;}
+  return {x:out,sr:sr/f};
+}
+// One clear melody: YIN pitch tracking
+async function trackSolo(x,sr,prog){
+  const W=1024,hop=Math.round(sr*0.02),tauMin=Math.max(2,Math.floor(sr/2600)),tauMax=Math.ceil(sr/75);
+  const frames=Math.max(0,Math.floor((x.length-W-tauMax)/hop)),m=new Float32Array(frames).fill(NaN),env=new Float32Array(frames);
+  const d=new Float32Array(tauMax+2),cm=new Float32Array(tauMax+2),rms=new Float32Array(frames);let mx=0;
+  for(let f=0;f<frames;f++){let e=0,o=f*hop;for(let j=0;j<W;j+=2)e+=x[o+j]*x[o+j];rms[f]=Math.sqrt(e/(W/2));if(rms[f]>mx)mx=rms[f];}
+  const gate=Math.max(0.002,mx*0.05);
+  for(let f=0;f<frames;f++){
+    if(f%150===0){prog(f/frames);await tickUI();}
+    if(rms[f]<gate)continue; const o=f*hop;
+    let run=0;cm[0]=1;
+    for(let t=1;t<=tauMax;t++){let a=0;for(let j=0;j<W;j++){const v=x[o+j]-x[o+j+t];a+=v*v;}d[t]=a;run+=a;cm[t]=run>0?a*t/run:1;}
+    let tau=-1;
+    for(let t=tauMin;t<tauMax;t++){if(cm[t]<0.12){while(t+1<tauMax&&cm[t+1]<cm[t])t++;tau=t;break;}}
+    if(tau<0){let best=1,bt=-1;for(let t=tauMin;t<tauMax;t++)if(cm[t]<best){best=cm[t];bt=t;}if(best<0.2)tau=bt;}
+    if(tau<=1)continue;
+    const a=cm[tau-1],b=cm[tau],c=cm[tau+1],den=a-2*b+c,tt=den!==0?tau+0.5*(a-c)/den:tau;
+    m[f]=69+12*Math.log2(sr/tt/440);
+  }
+  for(let f=1;f<frames;f++)env[f]=Math.max(0,rms[f]-rms[f-1]);
+  return {m,dt:hop/sr,env,rms};
+}
+function fft(re,im){
+  const n=re.length;
+  for(let i=1,j=0;i<n;i++){let bit=n>>1;for(;j&bit;bit>>=1)j^=bit;j^=bit;if(i<j){let t=re[i];re[i]=re[j];re[j]=t;t=im[i];im[i]=im[j];im[j]=t;}}
+  for(let len=2;len<=n;len<<=1){const ang=-2*Math.PI/len,wr=Math.cos(ang),wi=Math.sin(ang),h=len>>1;
+    for(let i=0;i<n;i+=len){let cr=1,ci=0;for(let k=0;k<h;k++){const a=i+k,b=a+h,xr=re[b]*cr-im[b]*ci,xi=re[b]*ci+im[b]*cr;
+        re[b]=re[a]-xr;im[b]=im[a]-xi;re[a]+=xr;im[a]+=xi;const t=cr*wr-ci*wi;ci=cr*wi+ci*wr;cr=t;}}}
+}
+// Full song: find the strongest singing-range line (harmonic salience + smooth path)
+async function trackMix(x,sr,prog){
+  const N=2048,hop=Math.round(sr*0.02),frames=Math.max(0,Math.floor((x.length-N)/hop)),half=N>>1;
+  const LO=53,HI=88,ST=0.25,nc=Math.round((HI-LO)/ST)+1,NH=6;
+  const win=new Float32Array(N);for(let i=0;i<N;i++)win[i]=0.5-0.5*Math.cos(2*Math.PI*i/(N-1));
+  const wgt=new Float32Array(half);for(let k=0;k<half;k++){const f=k*sr/N;wgt[k]=f<150?0.15:Math.min(1.4,Math.max(0.35,Math.sqrt(f/900)));}
+  const hp=new Float32Array(nc*NH),hw=[1,0.8,0.62,0.5,0.4,0.32];
+  for(let c=0;c<nc;c++){const f0=440*Math.pow(2,(LO+c*ST-69)/12);for(let h=0;h<NH;h++){const p=(h+1)*f0*N/sr;hp[c*NH+h]=p<half-2?p:-1;}}
+  const sal=new Float32Array(frames*nc),fmax=new Float32Array(frames),env=new Float32Array(frames);
+  const re=new Float32Array(N),im=new Float32Array(N),mag=new Float32Array(half),prev=new Float32Array(half);
+  for(let f=0;f<frames;f++){
+    if(f%200===0){prog(0.8*f/frames);await tickUI();}
+    const o=f*hop;for(let i=0;i<N;i++){re[i]=x[o+i]*win[i];im[i]=0;}
+    fft(re,im);let fl=0;
+    for(let k=0;k<half;k++){const v=Math.pow(re[k]*re[k]+im[k]*im[k],0.3)*wgt[k];const dlt=v-prev[k];if(dlt>0)fl+=dlt;prev[k]=v;mag[k]=v;}
+    env[f]=fl;let mxv=0;
+    for(let c=0;c<nc;c++){let a=0;for(let h=0;h<NH;h++){const p=hp[c*NH+h];if(p<0)break;const i0=p|0,fr=p-i0;a+=hw[h]*(mag[i0]*(1-fr)+mag[i0+1]*fr);}
+      // discourage picking an octave below the real note: the odd harmonics must carry weight too
+      sal[f*nc+c]=a;if(a>mxv)mxv=a;}
+    fmax[f]=mxv;
+  }
+  const sorted=Float32Array.from(fmax).sort(),G=sorted[Math.floor(sorted.length*0.9)]||1;
+  // Viterbi over pitch bins + one "no melody" state
+  const U=0.52,SW=0.35,JP=0.9,K=0.05,WN=14;
+  let sc=new Float32Array(nc+1),ns=new Float32Array(nc+1);const bp=new Int16Array(frames*(nc+1));
+  for(let f=0;f<frames;f++){
+    if(f%400===0){prog(0.8+0.2*f/frames);await tickUI();}
+    let gb=-1e9,gi=0;for(let c=0;c<nc;c++)if(sc[c]>gb){gb=sc[c];gi=c;}
+    const us=sc[nc];
+    for(let c=0;c<nc;c++){let b=gb-JP,bi=gi;if(us-SW>b){b=us-SW;bi=nc;}
+      const a0=Math.max(0,c-WN),a1=Math.min(nc-1,c+WN);for(let p=a0;p<=a1;p++){const v=sc[p]-K*Math.abs(p-c);if(v>b){b=v;bi=p;}}
+      ns[c]=b+sal[f*nc+c]/G;bp[f*(nc+1)+c]=bi;}
+    {let b=us,bi=nc;if(gb-SW>b){b=gb-SW;bi=gi;}ns[nc]=b+U;bp[f*(nc+1)+nc]=bi;}
+    const t=sc;sc=ns;ns=t;
+  }
+  const m=new Float32Array(frames).fill(NaN);
+  if(frames){let st=0,b=-1e9;for(let c=0;c<=nc;c++)if(sc[c]>b){b=sc[c];st=c;}
+    for(let f=frames-1;f>=0;f--){if(st<nc)m[f]=LO+st*ST;st=bp[f*(nc+1)+st];}}
+  return {m,dt:hop/sr,env};
+}
+function trackToNotes(m,dt,rms){
+  const n=m.length;let sx=0,sy=0;
+  for(let i=0;i<n;i++){const v=m[i];if(v===v){const a=(v-Math.round(v))*2*Math.PI;sx+=Math.cos(a);sy+=Math.sin(a);}}
+  const off=Math.atan2(sy,sx)/(2*Math.PI);                      // overall tuning offset of the recording
+  const s=new Float32Array(n);
+  for(let i=0;i<n;i++){if(m[i]!==m[i]){s[i]=NaN;continue;}const w=[];for(let k=-2;k<=2;k++){const v=m[i+k];if(v!==undefined&&v===v)w.push(v);}w.sort((a,b)=>a-b);s[i]=w[w.length>>1]-off;}
+  const notes=[];let i=0;
+  while(i<n){
+    if(s[i]!==s[i]){i++;continue;}
+    const vals=[s[i]];let sum=s[i],j=i+1,gap=0,last=i;
+    while(j<n){const v=s[j];if(v!==v){if(++gap>1)break;j++;continue;}if(Math.abs(v-sum/vals.length)>0.62)break;vals.push(v);sum+=v;last=j;gap=0;j++;}
+    const dur=(last-i+1)*dt;
+    if(dur>=0.09){vals.sort((a,b)=>a-b);const midi=Math.round(vals[vals.length>>1]);
+      // a dip in loudness inside one pitch = the same note played again
+      const cuts=[i];
+      if(rms&&last-i>=10){const r=[];for(let k=i;k<=last;k++)r.push(rms[k]);const med=r.slice().sort((a,b)=>a-b)[r.length>>1];
+        for(let k=i+5;k<=last-5;k++){if(rms[k]<0.45*med&&rms[k]<=rms[k-1]&&rms[k]<=rms[k+1]&&k-cuts[cuts.length-1]>=5){cuts.push(k);k+=4;}}}
+      cuts.push(last+1);
+      for(let c=0;c<cuts.length-1;c++)notes.push({midi,t:cuts[c]*dt,d:(cuts[c+1]-cuts[c])*dt,cut:c>0});}
+    i=last+1;
+  }
+  const out=[];
+  for(const nt of notes){const p=out[out.length-1];if(p&&!nt.cut&&p.midi===nt.midi&&nt.t-(p.t+p.d)<0.03){p.d=nt.t+nt.d-p.t;}else out.push(nt);}
+  return out;
+}
+function onsetFit(ts,bpm,div){let cr=0,ci=0;const per=60/bpm/div;for(const t of ts){const a=2*Math.PI*t/per;cr+=Math.cos(a);ci+=Math.sin(a);}return Math.sqrt(cr*cr+ci*ci)/(ts.length||1);}
+function refineTempo(ts,lo,hi,prior){let best=(lo+hi)/2,bs=-1;
+  for(let b=lo;b<=hi+1e-9;b+=0.05){let sc=Math.max(onsetFit(ts,b,2),0.75*onsetFit(ts,b,4));if(prior)sc*=Math.exp(-0.5*Math.pow(Math.log2(b/105)/0.8,2));if(sc>bs){bs=sc;best=b;}}
+  return best;}
+function estimateTempo(env,dt,fixed){
+  const n=env.length;let mean=0;for(let i=0;i<n;i++)mean+=env[i];mean/=n||1;
+  const e=new Float32Array(n);for(let i=0;i<n;i++)e[i]=Math.max(0,env[i]-mean);
+  let bpm=fixed||0;
+  if(!bpm){let bs=-1;bpm=100;
+    for(let b=60;b<=180;b+=0.5){const lag=60/b/dt;let a=0;for(let i=0;i+2*lag+1<n;i+=2){const p=i+lag,i0=p|0,q=i+2*lag,j0=q|0;a+=e[i]*(e[i0]+0.5*e[j0]);}
+      const pr=Math.exp(-0.5*Math.pow(Math.log2(b/110)/0.7,2));if(a*pr>bs){bs=a*pr;bpm=b;}}
+    bpm=Math.round(bpm);}
+  const lag=60/bpm/dt;let bph=0,bv=-1;
+  for(let ph=0;ph<lag;ph++){let a=0;for(let k=ph;k<n;k+=lag)a+=e[k|0];if(a>bv){bv=a;bph=ph;}}
+  return {bpm,phase:bph*dt};
+}
+async function transcribe(arrayBuffer,name){
+  const msg=t=>{$('txMsg').textContent=t;};
+  try{
+    stop();msg('Reading the audio…');
+    const c=ac();const ab=await new Promise((res,rej)=>{try{const p=c.decodeAudioData(arrayBuffer,res,rej);if(p&&p.then)p.then(res,rej);}catch(e){rej(e);}});
+    const mode=$('txMode').value,{x,sr}=mixDown(ab,mode==='mix'?16000:22050);
+    const tr=await (mode==='mix'?trackMix:trackSolo)(x,sr,p=>msg('Listening for the melody… '+Math.round(p*100)+'%'));
+    const notes=trackToNotes(tr.m,tr.dt,tr.rms);
+    if(notes.length<2){msg('I could not hear a clear melody. Try a quieter room, record closer to the mic, or switch the type above.');return;}
+    let env=tr.env; if(mode==='solo'){env=new Float32Array(tr.m.length);notes.forEach(nt=>{env[Math.min(env.length-1,Math.round(nt.t/tr.dt))]+=Math.min(1,nt.d);});}
+    const fixed=+$('txBpm').value>=40?+$('txBpm').value:0,ons=notes.map(nt=>nt.t);
+    let tp=estimateTempo(env,tr.dt,fixed);
+    if(!fixed&&ons.length>=6){const fine=mode==='mix'?refineTempo(ons,tp.bpm-4,tp.bpm+4,false):refineTempo(ons,60,180,true);
+      const per=60/fine/tr.dt;let bph=0,bv=-1;for(let ph=0;ph<per;ph++){let a=0;for(let k=ph;k<env.length;k+=per)a+=env[k|0];if(a>bv){bv=a;bph=ph;}}
+      tp={bpm:fine,phase:bph*tr.dt};}
+    const spb=60/tp.bpm;
+    const mono=notes.map(nt=>{let b=(nt.t-tp.phase)/spb;const q=Math.round(b*4)/4;if(Math.abs(q-b)<0.13)b=q;return {midi:nt.midi,start:b,dur:Math.max(0.2,nt.d/spb)};});
+    const first=mono[0].start,shift=Math.floor(first/4)*4;mono.forEach(o=>o.start-=shift);if(mono[0].start<0)mono.forEach(o=>o.start+=4);
+    for(let i=0;i<mono.length-1;i++){if(mono[i].start+mono[i].dur>mono[i+1].start)mono[i].dur=Math.max(0.1,mono[i+1].start-mono[i].start);}
+    const part=monoToPart(mono,'Melody ('+mono.length+' notes)',4);
+    const song={title:name||'My recording',bpm:Math.round(tp.bpm),fifths:guessFifths(mono),beats:4,beatType:4,parts:[part]};
+    setSong(song);
+    msg('Wrote '+mono.length+' notes at about '+Math.round(tp.bpm)+' BPM'+(fixed?'':' (guessed)')+'. Listen with ▶ and compare with the real song. Use "Fix this note" for wrong notes, then "Save as MIDI file" to keep it.');
+  }catch(err){console.error(err);msg('⚠ Could not read that audio ('+(err&&err.message||err)+'). Try an mp3, m4a or wav file.');}
+}
+const REC={mr:null,chunks:[],t0:0,timer:0};
+async function recToggle(){
+  const b=$('txRec');
+  if(REC.mr){REC.mr.stop();return;}
+  if(!MIC.on){const ok=await micToggle();if(!ok)return;}
+  if(typeof MediaRecorder==='undefined'){$('txMsg').textContent='This browser cannot record here. Record with a voice-memo app and use "Choose audio file".';return;}
+  stop();REC.chunks=[];const mr=new MediaRecorder(MIC.stream);REC.mr=mr;REC.t0=performance.now();
+  mr.ondataavailable=e=>{if(e.data&&e.data.size)REC.chunks.push(e.data);};
+  mr.onstop=async()=>{clearInterval(REC.timer);REC.mr=null;b.textContent='● Record';b.classList.add('primary');
+    const blob=new Blob(REC.chunks,{type:mr.mimeType||'audio/webm'});transcribe(await blob.arrayBuffer(),'My recording');};
+  mr.start();b.textContent='■ Stop and write notes';
+  REC.timer=setInterval(()=>{const sec=Math.floor((performance.now()-REC.t0)/1000);$('txMsg').textContent='Recording… '+Math.floor(sec/60)+':'+String(sec%60).padStart(2,'0')+'  (press Stop when the melody is finished)';},500);
+}
+function editNote(kind){
+  if(!P||!P.notes.length)return;const n=P.notes[S.idx];if(!n)return;stop();
+  if(kind==='del'){if(P.notes.length<2)return;P.ev.splice(P.ev.indexOf(n),1);}
+  else if(kind==='split'){const h=n.dur/2,dt=durType(Math.max(0.125,h));const b={midi:n.midi,step:n.step,alter:n.alter,oct:n.oct,start:n.start+h,dur:h,type:dt[0],dots:dt[1]};n.dur=h;n.type=dt[0];n.dots=dt[1];P.ev.splice(P.ev.indexOf(n)+1,0,b);}
+  else{n.midi=Math.max(21,Math.min(108,n.midi+(+kind)));n.step=null;}
+  P.notes=P.ev.filter(e=>!e.rest);S.idx=Math.min(S.idx,P.notes.length-1);refresh();saveSong();
+  $('msg').textContent=rangeMsg()||(P.notes.length+' notes');
+}
+function exportMIDI(){
+  if(!P)return;const div=480,vl=v=>{const b=[v&127];v>>=7;while(v){b.unshift((v&127)|128);v>>=7;}return b;};
+  const evs=[];P.notes.forEach(n=>{const a=Math.round(n.start*div),b=Math.max(a+1,Math.round((n.start+n.dur)*div));evs.push([a,0x90,n.d.midi,90]);evs.push([b,0x80,n.d.midi,0]);});
+  evs.sort((p,q)=>p[0]-q[0]||p[1]-q[1]);
+  const us=Math.round(60000000/S.bpm),bt=Math.round(Math.log2(S.song.beatType||4));
+  const tr=[0,0xFF,0x51,3,(us>>16)&255,(us>>8)&255,us&255,0,0xFF,0x58,4,S.song.beats||4,bt,24,8];let t=0;
+  for(const e of evs){tr.push(...vl(e[0]-t),e[1],e[2],e[3]);t=e[0];}tr.push(0,0xFF,0x2F,0);
+  const L4=v=>[(v>>>24)&255,(v>>>16)&255,(v>>>8)&255,v&255];
+  const bytes=new Uint8Array([0x4D,0x54,0x68,0x64,0,0,0,6,0,0,0,1,div>>8,div&255,0x4D,0x54,0x72,0x6B,...L4(tr.length),...tr]);
+  const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([bytes],{type:'audio/midi'}));a.download=((S.song.title||'melody').replace(/[\\/:*?"<>|]/g,'_'))+'.mid';document.body.appendChild(a);a.click();a.remove();
 }
 
 // ---------- transport ----------
@@ -785,6 +985,11 @@ document.querySelectorAll('[data-t]').forEach(b=>b.onclick=()=>{if(!P)return;con
   $('msg').textContent=rangeMsg()||'All notes are in position 1.';});
 document.querySelectorAll('[data-s]').forEach(b=>b.onclick=()=>{const c=ac();MIC.mute=performance.now()+2300;MIC.hist=[];tone(+b.dataset.s,c.currentTime+0.02,2.2,0.18,c.destination);});
 $('partSel').onchange=e=>setPart(+e.target.value,true);
+$('txOpen').onclick=()=>$('txPanel').classList.toggle('hidden');
+$('txRec').onclick=()=>recToggle();
+$('txFile').onchange=async e=>{const f=e.target.files[0];e.target.value='';if(f)transcribe(await f.arrayBuffer(),f.name.replace(/\.[^.]+$/,''));};
+document.querySelectorAll('[data-e]').forEach(b=>b.onclick=()=>editNote(b.dataset.e));
+$('bExport').onclick=()=>exportMIDI();
 $('demoSel').onchange=e=>{if(e.target.value){setSong(demoSong(e.target.value));e.target.value='';}};
 async function openFile(file){
   try{
@@ -817,7 +1022,7 @@ function save(){try{localStorage.setItem('vp.set',JSON.stringify({A:S.A,mode:S.m
   try{ if(song&&song.parts&&song.parts.length)setSong(song); else throw 0; }catch(e){setSong(demoSong('twinkle'));$('msg').textContent='Demo song loaded. Open a MusicXML (.musicxml / .mxl / .xml) or MIDI (.mid) file to practice your own.';}
   requestAnimationFrame(frame);
 })();
-window.__vp={S,parseMusicXML,parseMIDI,get P(){return P;},MIC};
+window.__vp={S,parseMusicXML,parseMIDI,get P(){return P;},MIC,trackSolo,trackMix,trackToNotes,estimateTempo};
 </script>
 </body>
 </html>
