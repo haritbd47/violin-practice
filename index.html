@@ -194,13 +194,15 @@ function guessFifths(notes){
   let best=0,bs=-1; for(const f of [0,1,-1,2,-2,3,-3,4,-4,5,-5,6]){const t=((f*7)%12+12)%12; let s=0; for(const p of STEP_PC)s+=h[(p+t)%12]; if(s>bs+1e-9){bs=s;best=f;}}
   return best;
 }
-const ODN=[25,29,33,37], POSC=[0,0,1.0,1.1], ROM=['','I','II','III'], ORD=['','1st','2nd','3rd'];
+const ODN=[25,29,33,37], POSC=[0,0,1.6,1.8,2.6,3.2,3.8,4.4,5.0,5.6,6.2], ROM=['','I','II','III','IV','V','VI','VII','VIII','IX','X'], ORD=['','1st','2nd','3rd','4th','5th','6th','7th','8th','9th','10th'];
+const MS=[0,2,4,5,7,9,11,12,14,16,17,19,21,23,24,26];
 function noteOptions(d){
   const out=[],m=d.midi,dn=d.oct*7+d.step;
-  for(let si=0;si<4;si++){const s=m-OPEN[si]; if(s<0||s>12)continue;
-    if(s===0){for(let p=1;p<=3;p++)out.push({si,s,pos:p,fin:0,open:true,c:POSC[p]*0.5+(S.use4&&si>0?2.5:0)});continue;}
-    let dd=dn-ODN[si]; const ds=[0,1,1,2,2,3,3,4,5,5,6,6,7][s]; if(Math.abs(dd-ds)>1||dd<1)dd=ds;
-    for(let p=1;p<=3;p++){const f=dd-p+1; if(f<1||f>4)continue; out.push({si,s,pos:p,fin:f,open:false,c:POSC[p]+(f===4&&!S.use4?0.5:0)});}
+  const DS=[0,1,1,2,2,3,3,4,5,5,6,6];
+  for(let si=0;si<4;si++){const s=m-OPEN[si], pmax=si===3?10:3; if(s<0||s>(si===3?24:12))continue;
+    if(s===0){for(let p=1;p<=10;p++)out.push({si,s,pos:p,fin:0,open:true,c:POSC[p]*0.5+(S.use4&&si>0?2.5:0)});continue;}
+    let dd=dn-ODN[si]; const ds=7*Math.floor(s/12)+DS[s%12]; if(Math.abs(dd-ds)>1||dd<1)dd=Math.max(1,ds);
+    for(let p=1;p<=pmax;p++){const f=dd-p+1; if(f<1||f>4)continue; out.push({si,s,pos:p,fin:f,open:false,c:POSC[p]+(f===4&&!S.use4?0.5:0)});}
   }
   return out;
 }
@@ -430,18 +432,18 @@ function setSong(song,keep){
 function setPart(i,auto){
   stop(); S.pi=i; P=S.song.parts[i]; P.notes=P.ev.filter(e=>!e.rest); S.idx=0; S.viewX=-20;
   if(auto){let mn=1e9,mx=-1e9;P.notes.forEach(n=>{if(n.midi<mn)mn=n.midi;if(n.midi>mx)mx=n.midi;});
-    let t=0,bs=1e9; for(const c of [0,12,-12,24,-24,36,-36]){let sc=0; for(const n of P.notes){const m=n.midi+c; sc+=m<55?3:m>86?3:m>83?1:0;} if(sc<bs-1e-9){bs=sc;t=c;}} S.transpose=t;}
+    S.transpose=0;}
   refresh();
   let m='';
-  if(auto&&S.transpose)m='Moved '+(S.transpose>0?'up ':'down ')+Math.abs(S.transpose/12)+' octave'+(Math.abs(S.transpose)>12?'s':'')+' to fit the violin. ';
-  $('msg').textContent=m+rangeMsg()||(P.notes.length+' notes · '+P.measures.length+' measures');
+  $('msg').textContent=rangeMsg()||(P.notes.length+' notes · '+P.measures.length+' measures · all in 1st position');
 }
 function rangeMsg(){
   const low=P.notes.filter(n=>n.d.midi<55).length, high=P.notes.filter(n=>n.d.f&&n.d.f.high).length, up=P.notes.filter(n=>n.d.f&&n.d.f.pos>1&&!n.d.f.open).length;
   let m=''; const pl=(n,a,b)=>n+(n===1?' note '+a:' notes '+b);
   if(low)m+=pl(low,'is','are')+' below the violin\'s lowest note (G3) — transpose up. ';
-  if(high)m+=pl(high,'is','are')+' above 3rd position — try −8ve. ';
-  if(!low&&!high)m+=up?(pl(up,'uses','use')+' 2nd or 3rd position; the rest are in 1st position.'):'';
+  if(high)m+=pl(high,'is','are')+' above 10th position. ';
+  const hi4=P.notes.filter(n=>n.d.f&&n.d.f.pos>3&&!n.d.f.open).length;
+  if(up)m+=pl(up,'is','are')+' above 1st position'+(hi4?' ('+hi4+' in 4th position or higher)':'')+'; the rest are in 1st position.';
   return m;
 }
 function refresh(){
@@ -468,7 +470,7 @@ function refresh(){
   L.pxb=Math.max(44,Math.min(120,24/Math.max(gmin,0.2)));
   let mn=0,mx=8; for(const n of P.notes){if(n.d.pos<mn)mn=n.d.pos;if(n.d.pos>mx)mx=n.d.pos;}
   L.top=36+Math.max(0,mx-8)*5; L.bottom=L.top+40+Math.max(0,-mn)*5+16; L.h=L.bottom+(S.names?47:8);
-  L.lp=50+Math.abs(f)*9+8; L.smax=12;
+  L.lp=50+Math.abs(f)*9+8; {let sm=12;for(const n of P.notes){const f=n.d.f;if(f&&!f.high&&f.s+1.5>sm)sm=f.s+1.5;}L.smax=Math.min(25,sm);}
   $('bpm').value=S.bpm; $('bpmV').textContent=S.bpm; $('trV').textContent=(S.transpose>0?'+':'')+S.transpose;
 }
 const GAP=24;
@@ -690,7 +692,7 @@ function drawBoard(now){
   g.beginPath();g.moveTo(cx-62,NY);g.lineTo(cx+62,NY);g.lineTo(cx+92,NY+LEN+8);g.lineTo(cx-92,NY+LEN+8);g.closePath();g.fill();
   const cur0=P&&P.notes[S.idx], hp=(cur0&&cur0.d.hand)||1, hwAt=y=>62+((y-NY)/LEN)*30;
   // hand-position zone (where the four fingers sit)
-  {const R=[[0,0],[0.6,7.5],[2.6,9.5],[4.6,11.3]][hp],y1=yS(R[0]),y2=yS(R[1]);
+  {const R=[MS[hp]-1.4,Math.min(SM,MS[hp+3]+0.5)],y1=yS(R[0]),y2=yS(R[1]);
     g.fillStyle=hp>1?TH.accent:'#ffffff';g.globalAlpha=hp>1?0.30:0.10;g.beginPath();g.moveTo(cx-hwAt(y1),y1);g.lineTo(cx+hwAt(y1),y1);g.lineTo(cx+hwAt(y2),y2);g.lineTo(cx-hwAt(y2),y2);g.closePath();g.fill();g.globalAlpha=1;
     const ym=(y1+y2)/2,xr=cx+hwAt(ym)+7;g.textAlign='left';g.textBaseline='middle';g.fillStyle=hp>1?TH.accent:TH.muted;
     g.font='700 13px -apple-system,"Segoe UI",sans-serif';g.fillText(ORD[hp],xr,ym-8);g.font='11px -apple-system,"Segoe UI",sans-serif';g.fillText('position',xr,ym+7);
@@ -733,7 +735,7 @@ function drawInfo(){
   setText('now',cur?spellName(cur.d,true):'–');
   let wh='';
   if(cur){const f=cur.d.f; if(!f)wh='Below the violin range — transpose up';
-    else if(f.high)wh='Too high for 3rd position — transpose down (−8ve)';
+    else if(f.high)wh='Above 10th position';
     else if(f.open)wh=SNAME[f.si]+' string · open string';
     else wh=SNAME[f.si]+' string · <span style="color:'+(f.pos>1?'var(--accent)':'inherit')+'">'+ORD[f.pos]+' position</span> · '+(f.note?f.note+' ':'')+FN[f.fin]+(cur.d.shift?' <span class="muted">(shift '+(f.pos>((S.idx>0&&P.notes[S.idx-1].d.hand)||1)?'up':'back down')+')</span>':'');}
   setText('where',wh,true);
