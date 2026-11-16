@@ -41,7 +41,7 @@
   .top{display:grid;grid-template-columns:auto 1fr;gap:14px;align-items:start}
   #info .status{min-height:22px;font-weight:600;font-size:14px}
   #info .now{font-size:46px;font-weight:700;line-height:1.05;letter-spacing:-.02em;margin-top:4px}
-  #info .where{font-size:16px;font-weight:600;margin-top:2px}
+  #info .where{font-size:20px;font-weight:700;margin-top:6px;line-height:1.3}
   #info .you{margin-top:10px;padding-top:8px;border-top:1px solid var(--line);font-size:14px;min-height:46px}
   #info .you b{font-size:20px}
   #info .next{margin-top:8px}
@@ -63,7 +63,7 @@
   .cents{text-align:center;font-weight:700;font-size:18px;min-height:26px}
   .strings{display:flex;gap:8px;justify-content:center;margin-top:14px;flex-wrap:wrap}
   @media (max-width:560px){
-    #info .now{font-size:34px} #tuner .big{font-size:72px} h1{display:none}
+    #info .where{font-size:16px} #tuner .big{font-size:72px} h1{display:none}
     .top{gap:10px}
   }
 </style>
@@ -97,7 +97,6 @@
         <canvas id="board"></canvas>
         <div id="info">
           <div class="status" id="status"></div>
-          <div class="now" id="now">–</div>
           <div class="where" id="where"></div>
           <div class="you" id="you"></div>
           <div class="next muted" id="next"></div>
@@ -194,43 +193,24 @@ function guessFifths(notes){
   let best=0,bs=-1; for(const f of [0,1,-1,2,-2,3,-3,4,-4,5,-5,6]){const t=((f*7)%12+12)%12; let s=0; for(const p of STEP_PC)s+=h[(p+t)%12]; if(s>bs+1e-9){bs=s;best=f;}}
   return best;
 }
-const ODN=[25,29,33,37], POSC=[0,0,1.6,1.8,2.6,3.2,3.8,4.4,5.0,5.6,6.2], ROM=['','I','II','III','IV','V','VI','VII','VIII','IX','X'], ORD=['','1st','2nd','3rd','4th','5th','6th','7th','8th','9th','10th'];
-const MS=[0,2,4,5,7,9,11,12,14,16,17,19,21,23,24,26];
-function noteOptions(d){
-  const out=[],m=d.midi,dn=d.oct*7+d.step;
-  const DS=[0,1,1,2,2,3,3,4,5,5,6,6];
-  for(let si=0;si<4;si++){const s=m-OPEN[si], pmax=si===3?10:3; if(s<0||s>(si===3?24:12))continue;
-    if(s===0){for(let p=1;p<=10;p++)out.push({si,s,pos:p,fin:0,open:true,c:POSC[p]*0.5+(S.use4&&si>0?2.5:0)});continue;}
-    let dd=dn-ODN[si]; const ds=7*Math.floor(s/12)+DS[s%12]; if(Math.abs(dd-ds)>1||dd<1)dd=Math.max(1,ds);
-    for(let p=1;p<=pmax;p++){const f=dd-p+1; if(f<1||f>4)continue; out.push({si,s,pos:p,fin:f,open:false,c:POSC[p]+(f===4&&!S.use4?0.5:0)});}
-  }
-  return out;
-}
-// Choose string / hand position / finger for every note: stay in 1st position when possible,
-// move to 2nd or 3rd only when needed, and avoid jumping back and forth inside a phrase.
+const ODN=[25,29,33,37], DS=[0,1,1,2,2,3,3,4,5,5,6,6], ZB=[0,7.5,14.5,22.5];
+// Three fixed hand positions (zones) stacked along the string. Each zone holds four note names:
+// zone 1 = fingers 1-4 next to the nut, zone 2 starts where zone 1's 4th finger ends, zone 3 after that.
 function assignFingering(){
-  const layers=[];
-  for(const n of P.notes){
-    const m=n.d.midi; n.d.f=null; n.d.shift=false; n.d.hand=1;
-    if(m<55)continue;
-    const opts=noteOptions(n.d);
-    if(!opts.length){n.d.f={si:3,s:m-76,fin:-1,pos:0,high:true,note:''};continue;}
-    const layer=opts.map(o=>({o,n,cost:o.c,back:-1}));
-    if(layers.length){const pl=layers[layers.length-1];
-      for(const x of layer){let best=1e9,bi=-1;
-        for(let i=0;i<pl.length;i++){const a=pl[i];let t=0;
-          if(a.o.pos!==x.o.pos){const gap=n.start-(a.n.start+a.n.dur);{const dp=Math.abs(a.o.pos-x.o.pos);t+=(a.o.open||x.o.open||gap>=0.5)?0.8+0.2*dp:2.5+dp;}}
-          const dsx=Math.abs(a.o.si-x.o.si);t+=dsx===0?0:dsx===1?0.2:dsx;
-          const c=a.cost+t;if(c<best){best=c;bi=i;}}
-        x.cost+=best;x.back=bi;}}
-    layers.push(layer);
-  }
-  if(layers.length){let li=layers.length-1,bi=0;layers[li].forEach((x,i)=>{if(x.cost<layers[li][bi].cost)bi=i;});
-    for(;li>=0;li--){const x=layers[li][bi],o=x.o;let note='';
-      if(o.pos===1&&!o.open){if((o.fin===1&&o.s===1)||(o.fin===2&&o.s===3)||(o.fin===4&&o.s===6))note='low';else if(o.fin===3&&o.s===6)note='high';}
-      x.n.d.f={si:o.si,s:o.s,fin:o.fin,pos:o.pos,open:o.open,note};bi=x.back;}}
   let hand=1;
-  for(const n of P.notes){const f=n.d.f; if(f&&!f.open&&!f.high){if(f.pos!==hand){n.d.shift=true;hand=f.pos;}} n.d.hand=hand;}
+  for(const n of P.notes){const d=n.d,m=d.midi; d.f=null; d.shift=false; d.hand=hand;
+    if(m<55)continue;
+    let si=3; for(let i=0;i<3;i++){if(m<OPEN[i+1]){si=i;break;}}
+    let s=m-OPEN[si];
+    if(S.use4&&s===0&&si>0){si--;s=7;}
+    if(s===0){d.f={si,s,fin:0,pos:hand,open:true,note:''};continue;}
+    let dd=d.oct*7+d.step-ODN[si]; const ds=7*Math.floor(s/12)+DS[s%12]; if(Math.abs(dd-ds)>1||dd<1)dd=Math.max(1,ds);
+    if(dd>13||s>22){d.f={si,s,fin:-1,pos:0,high:true,note:''};continue;}
+    const z=Math.min(3,Math.floor((dd-1)/4)+1), fin=dd>12?4:((dd-1)%4)+1; let note='';
+    if(z===1){if((fin===1&&s===1)||(fin===2&&s===3)||(fin===4&&s===6))note='low';else if(fin===3&&s===6)note='high';}
+    if(dd>12)note='stretched';
+    d.f={si,s,fin,pos:z,open:false,note}; if(z!==hand){d.shift=true;hand=z;} d.hand=hand;
+  }
 }
 
 // ---------- parsers ----------
@@ -435,15 +415,14 @@ function setPart(i,auto){
     S.transpose=0;}
   refresh();
   let m='';
-  $('msg').textContent=rangeMsg()||(P.notes.length+' notes · '+P.measures.length+' measures · all in 1st position');
+  $('msg').textContent=rangeMsg()||(P.notes.length+' notes · '+P.measures.length+' measures · all in position 1');
 }
 function rangeMsg(){
-  const low=P.notes.filter(n=>n.d.midi<55).length, high=P.notes.filter(n=>n.d.f&&n.d.f.high).length, up=P.notes.filter(n=>n.d.f&&n.d.f.pos>1&&!n.d.f.open).length;
-  let m=''; const pl=(n,a,b)=>n+(n===1?' note '+a:' notes '+b);
-  if(low)m+=pl(low,'is','are')+' below the violin\'s lowest note (G3) — transpose up. ';
-  if(high)m+=pl(high,'is','are')+' above 10th position. ';
-  const hi4=P.notes.filter(n=>n.d.f&&n.d.f.pos>3&&!n.d.f.open).length;
-  if(up)m+=pl(up,'is','are')+' above 1st position'+(hi4?' ('+hi4+' in 4th position or higher)':'')+'; the rest are in 1st position.';
+  const c=f=>P.notes.filter(f).length, low=c(n=>n.d.midi<55), high=c(n=>n.d.f&&n.d.f.high), z2=c(n=>n.d.f&&!n.d.f.open&&n.d.f.pos===2), z3=c(n=>n.d.f&&!n.d.f.open&&n.d.f.pos===3);
+  const pl=(n,a,b)=>n+(n===1?' note '+a:' notes '+b); let m='';
+  if(low)m+=pl(low,'is','are')+' below the violin\'s lowest note (G3). ';
+  if(high)m+=pl(high,'is','are')+' above position 3. ';
+  if(z2||z3)m+='Position 2: '+z2+' notes · position 3: '+z3+' notes · the rest are in position 1.';
   return m;
 }
 function refresh(){
@@ -470,7 +449,7 @@ function refresh(){
   L.pxb=Math.max(44,Math.min(120,24/Math.max(gmin,0.2)));
   let mn=0,mx=8; for(const n of P.notes){if(n.d.pos<mn)mn=n.d.pos;if(n.d.pos>mx)mx=n.d.pos;}
   L.top=36+Math.max(0,mx-8)*5; L.bottom=L.top+40+Math.max(0,-mn)*5+16; L.h=L.bottom+(S.names?47:8);
-  L.lp=50+Math.abs(f)*9+8; {let sm=12;for(const n of P.notes){const f=n.d.f;if(f&&!f.high&&f.s+1.5>sm)sm=f.s+1.5;}L.smax=Math.min(25,sm);}
+  L.lp=50+Math.abs(f)*9+8; L.smax=22.5;
   $('bpm').value=S.bpm; $('bpmV').textContent=S.bpm; $('trV').textContent=(S.transpose>0?'+':'')+S.transpose;
 }
 const GAP=24;
@@ -663,7 +642,7 @@ function drawStaff(now){
     if(S.names){g.textAlign='center';g.textBaseline='alphabetic';g.fillStyle=isCur?TH.accent:TH.ink;g.font=(isCur?'700 ':'600 ')+'11px -apple-system,"Segoe UI",sans-serif';
       g.fillText(spellName(e.d,false),x,L.bottom+13);
       g.fillStyle=TH.muted;g.font='10px -apple-system,"Segoe UI",sans-serif';const f=e.d.f;g.fillText(f?(f.fin<0?'↑':String(f.fin)):'×',x,L.bottom+26);
-      if(e.d.shift){g.fillStyle=f.pos>1?TH.accent:TH.ink;g.font='700 11px Georgia,"Times New Roman",serif';g.fillText(ROM[f.pos],x,L.bottom+40);}
+      if(e.d.shift){g.fillStyle=f.pos>1?TH.accent:TH.ink;g.font='700 11px -apple-system,"Segoe UI",sans-serif';g.fillText(String(f.pos),x,L.bottom+40);}
       else if(f&&f.pos>1&&!f.open){g.fillStyle=TH.accent;g.fillRect(x-6,L.bottom+35.5,12,1.5);}}
   }
   // playhead in play mode
@@ -682,8 +661,8 @@ function drawStaff(now){
 
 function drawBoard(now){
   const cv=$('board'); const avail=Math.min(300,Math.max(150,document.querySelector('main').clientWidth*0.46)); const k=avail/300;
-  const g=fit(cv,300*k,330*k); g.scale(k,k);
-  const cx=132,NY=64,LEN=250,SM=L.smax||12;
+  const g=fit(cv,300*k,376*k); g.scale(k,k);
+  const cx=126,NY=64,LEN=250,SM=22.5;
   const yS=s=>NY+LEN*(1-Math.pow(2,-s/12))/(1-Math.pow(2,-SM/12));
   const xS=(i,y)=>{const u=(y-NY)/LEN;return cx+(i-1.5)*(30+u*16);};
   // scroll / pegbox
@@ -691,17 +670,19 @@ function drawBoard(now){
   // fingerboard
   g.beginPath();g.moveTo(cx-62,NY);g.lineTo(cx+62,NY);g.lineTo(cx+92,NY+LEN+8);g.lineTo(cx-92,NY+LEN+8);g.closePath();g.fill();
   const cur0=P&&P.notes[S.idx], hp=(cur0&&cur0.d.hand)||1, hwAt=y=>62+((y-NY)/LEN)*30;
-  // hand-position zone (where the four fingers sit)
-  {const R=[MS[hp]-1.4,Math.min(SM,MS[hp+3]+0.5)],y1=yS(R[0]),y2=yS(R[1]);
-    g.fillStyle=hp>1?TH.accent:'#ffffff';g.globalAlpha=hp>1?0.30:0.10;g.beginPath();g.moveTo(cx-hwAt(y1),y1);g.lineTo(cx+hwAt(y1),y1);g.lineTo(cx+hwAt(y2),y2);g.lineTo(cx-hwAt(y2),y2);g.closePath();g.fill();g.globalAlpha=1;
-    const ym=(y1+y2)/2,xr=cx+hwAt(ym)+7;g.textAlign='left';g.textBaseline='middle';g.fillStyle=hp>1?TH.accent:TH.muted;
-    g.font='700 13px -apple-system,"Segoe UI",sans-serif';g.fillText(ORD[hp],xr,ym-8);g.font='11px -apple-system,"Segoe UI",sans-serif';g.fillText('position',xr,ym+7);
-    g.strokeStyle=hp>1?TH.accent:TH.muted;g.lineWidth=2;g.beginPath();g.moveTo(xr-4,y1+2);g.lineTo(xr-4,y2-2);g.stroke();}
+  // three fixed positions (zones)
+  for(let z=1;z<=3;z++){const y1=yS(ZB[z-1]),y2=yS(ZB[z]),act=z===hp;
+    if(act){g.fillStyle=TH.accent;g.globalAlpha=0.30;g.beginPath();g.moveTo(cx-hwAt(y1),y1);g.lineTo(cx+hwAt(y1),y1);g.lineTo(cx+hwAt(y2),y2);g.lineTo(cx-hwAt(y2),y2);g.closePath();g.fill();g.globalAlpha=1;}
+    if(z<3){g.strokeStyle='rgba(255,255,255,.75)';g.lineWidth=2.5;g.beginPath();g.moveTo(cx-hwAt(y2),y2);g.lineTo(cx+hwAt(y2),y2);g.stroke();}
+    const ym=(y1+y2)/2,xb=cx+hwAt(y2)+6,a=y1+4,b=y2-4;
+    g.strokeStyle=act?TH.accent:TH.muted;g.lineWidth=act?2.4:1.6;g.lineCap='round';g.beginPath();
+    g.moveTo(xb,a);g.quadraticCurveTo(xb+7,a,xb+7,a+8);g.lineTo(xb+7,ym-6);g.quadraticCurveTo(xb+7,ym,xb+13,ym);g.quadraticCurveTo(xb+7,ym,xb+7,ym+6);g.lineTo(xb+7,b-8);g.quadraticCurveTo(xb+7,b,xb,b);g.stroke();
+    g.fillStyle=act?TH.accent:TH.muted;g.font=(act?'800 22px':'700 18px')+' -apple-system,"Segoe UI",sans-serif';g.textAlign='left';g.textBaseline='middle';g.fillText(String(z),xb+19,ym+1);}
   // tapes (first-position guide)
   g.font='11px -apple-system,"Segoe UI",sans-serif';g.textBaseline='middle';
   [[2,'1'],[4,'2'],[5,'3'],[7,'4']].forEach(([s,lab])=>{if(s>SM)return;const y=yS(s),hw=hwAt(y);
     g.strokeStyle='rgba(255,255,255,.22)';g.lineWidth=1.5;g.beginPath();g.moveTo(cx-hw,y);g.lineTo(cx+hw,y);g.stroke();
-    if(hp===1){g.fillStyle=TH.muted;g.textAlign='right';g.fillText(lab,cx-hw-6,y);}});
+    g.fillStyle=TH.muted;g.textAlign='right';g.fillText(lab,cx-hw-6,y);});
   // nut
   g.fillStyle='#e9e2d2';g.fillRect(cx-63,NY-4,126,5);
   const cur=P&&P.notes[S.idx], nxt=P&&P.notes[S.idx+1], cf=cur&&cur.d.f;
@@ -724,6 +705,7 @@ function drawBoard(now){
       if(cf.s===0){g.fillStyle=TH.card;g.beginPath();g.arc(x,y,6.5,0,Math.PI*2);g.fill();g.fillStyle=TH.accent;}
       else g.fillStyle='#fff';
       g.font='700 12px -apple-system,"Segoe UI",sans-serif';g.textAlign='center';g.textBaseline='middle';g.fillText(cf.fin<0?'↑':String(cf.fin),x,y+0.5);});}
+  if(cur){g.fillStyle=TH.ink;g.font='800 36px -apple-system,"Segoe UI",sans-serif';g.textAlign='center';g.textBaseline='middle';g.fillText(spellName(cur.d,true),cx,NY+LEN+38);}
 }
 
 const FN=['open string','1st finger','2nd finger','3rd finger','4th finger'];
@@ -732,17 +714,16 @@ function setText(id,v,html){if(cache[id]===v)return;cache[id]=v;if(html)$(id).in
 function drawInfo(){
   if(!P){return;}
   const cur=P.notes[S.idx],nxt=P.notes[S.idx+1];
-  setText('now',cur?spellName(cur.d,true):'–');
   let wh='';
   if(cur){const f=cur.d.f; if(!f)wh='Below the violin range — transpose up';
-    else if(f.high)wh='Above 10th position';
+    else if(f.high)wh='Above position 3';
     else if(f.open)wh=SNAME[f.si]+' string · open string';
-    else wh=SNAME[f.si]+' string · <span style="color:'+(f.pos>1?'var(--accent)':'inherit')+'">'+ORD[f.pos]+' position</span> · '+(f.note?f.note+' ':'')+FN[f.fin]+(cur.d.shift?' <span class="muted">(shift '+(f.pos>((S.idx>0&&P.notes[S.idx-1].d.hand)||1)?'up':'back down')+')</span>':'');}
+    else wh=SNAME[f.si]+' string · <span style="color:'+(f.pos>1?'var(--accent)':'inherit')+'">position '+f.pos+'</span> · '+FN[f.fin]+(f.note?' ('+f.note+')':'');}
   setText('where',wh,true);
   let nx='';
   if(nxt){const f=nxt.d.f;nx='Next: '+spellName(nxt.d,true);
-    if(f&&!f.high)nx+=' — '+SNAME[f.si]+' string, '+(f.open?'open':'finger '+f.fin)+(nxt.d.shift?' · <b style="color:var(--accent)">shift to '+ORD[f.pos]+' position</b>':'');
-    else if(f&&f.high)nx+=' — too high';}
+    if(f&&!f.high)nx+=' — '+SNAME[f.si]+' string, '+(f.open?'open':'finger '+f.fin)+(nxt.d.shift?' · <b style="color:var(--accent)">move to position '+f.pos+'</b>':'');
+    else if(f&&f.high)nx+=' — above position 3';}
   setText('next',nx,true);
   let st='';
   if(S.playing){ if(S.mode==='play')st=S.countIn?('Count-in: '+S.countIn):'Playing — note '+(S.idx+1)+' / '+P.notes.length;
@@ -796,7 +777,7 @@ $('bpm').oninput=e=>{const nb=+e.target.value; if(S.playing&&S.mode==='play'&&AC
 $('cSound').onchange=e=>{S.sound=e.target.checked;save();}; $('cMetro').onchange=e=>{S.metro=e.target.checked;save();};
 $('cNames').onchange=e=>{S.names=e.target.checked;refresh();save();}; $('cUse4').onchange=e=>{S.use4=e.target.checked;refresh();save();};
 document.querySelectorAll('[data-t]').forEach(b=>b.onclick=()=>{if(!P)return;const was=S.playing;stop();S.transpose=Math.max(-36,Math.min(36,S.transpose+(+b.dataset.t)));refresh();
-  $('msg').textContent=rangeMsg()||'All notes are in 1st position.';});
+  $('msg').textContent=rangeMsg()||'All notes are in position 1.';});
 document.querySelectorAll('[data-s]').forEach(b=>b.onclick=()=>{const c=ac();MIC.mute=performance.now()+2300;MIC.hist=[];tone(+b.dataset.s,c.currentTime+0.02,2.2,0.18,c.destination);});
 $('partSel').onchange=e=>setPart(+e.target.value,true);
 $('demoSel').onchange=e=>{if(e.target.value){setSong(demoSong(e.target.value));e.target.value='';}};
